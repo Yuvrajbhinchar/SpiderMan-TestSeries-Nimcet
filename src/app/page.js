@@ -1,69 +1,445 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import {
+  useEffect,
+  useState,
+} from "react";
+
+import { useSelector } from "react-redux";
+import { useRouter } from "next/navigation";
+import { motion } from "motion/react";
+
+import DashboardHeader from "@/components/dashboard/DashboardHeader";
+import SeriesCards from "@/components/dashboard/SeriesCards";
+import PracticeModes from "@/components/dashboard/PracticeModes";
+import DPPSubjects from "@/components/dashboard/DPPSubjects";
+import PracticeLibrary from "@/components/dashboard/PracticeLibrary";
+import AccessModal from "@/components/dashboard/AccessModal";
+import SpiderManLoader from "@/components/common/SpiderManLoader";
+
+export default function DashboardPage() {
+  const router = useRouter();
+
+  const {
+    user,
+    access,
+    loading: authLoading,
+    initialized,
+  } = useSelector(
+    (state) => state.auth
+  );
+
+  /*
+   * --------------------------------------------------------
+   * DASHBOARD STATE
+   * --------------------------------------------------------
+   */
+
+  const [
+    activeSeries,
+    setActiveSeries,
+  ] = useState("free");
+
+  const [
+    activeMode,
+    setActiveMode,
+  ] = useState("dpp");
+
+  const [
+    activeSubject,
+    setActiveSubject,
+  ] = useState("maths");
+
+  const [
+    profileOpen,
+    setProfileOpen,
+  ] = useState(false);
+
+  const [
+    mobileMenuOpen,
+    setMobileMenuOpen,
+  ] = useState(false);
+
+  const [
+    accessModalOpen,
+    setAccessModalOpen,
+  ] = useState(false);
+
+  /*
+   * --------------------------------------------------------
+   * AUTH REDIRECT
+   * --------------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (
+      initialized &&
+      !authLoading &&
+      !user
+    ) {
+      router.replace("/auth/login");
+    }
+  }, [
+    initialized,
+    authLoading,
+    user,
+    router,
+  ]);
+
+  /*
+   * --------------------------------------------------------
+   * SPIDERMAN LOADER
+   * --------------------------------------------------------
+   *
+   * Keep the existing SpiderMan loader during the
+   * initial auth/bootstrap phase.
+   */
+
+  if (
+    !initialized ||
+    authLoading
+  ) {
+    return <SpiderManLoader />;
+  }
+
+  /*
+   * --------------------------------------------------------
+   * NOT AUTHENTICATED
+   * --------------------------------------------------------
+   */
+
+  if (!user) {
+    return (
+      <main className="min-h-screen bg-[#f7f8fb]" />
+    );
+  }
+
+  /*
+   * --------------------------------------------------------
+   * SERIES SELECTION
+   * --------------------------------------------------------
+   */
+
+  const handleSeriesClick = (
+    selectedSeries
+  ) => {
+    const slug =
+      typeof selectedSeries === "string"
+        ? selectedSeries
+        : selectedSeries?.slug;
+
+    if (!slug) {
+      return;
+    }
+
+    /*
+     * SpiderMan is premium.
+     * Open access modal when the user
+     * doesn't have active access.
+     */
+    if (
+      slug === "spiderman" &&
+      !access?.spiderman
+    ) {
+      setAccessModalOpen(true);
+      return;
+    }
+
+    /*
+     * Dashboard only supports these two
+     * series.
+     */
+    if (
+      slug !== "free" &&
+      slug !== "spiderman"
+    ) {
+      return;
+    }
+
+    setActiveSeries(slug);
+
+    /*
+     * Reset practice selection whenever
+     * the series changes.
+     */
+    setActiveMode("dpp");
+    setActiveSubject("maths");
+
+    setMobileMenuOpen(false);
+    setAccessModalOpen(false);
+  };
+
+  /*
+   * --------------------------------------------------------
+   * PRACTICE MODE
+   * --------------------------------------------------------
+   */
+
+  const handleModeChange = (
+    mode
+  ) => {
+    if (!mode) {
+      return;
+    }
+
+    setActiveMode(mode);
+
+    /*
+     * Subject filter only applies to DPP.
+     * Reset to Maths whenever returning to DPP.
+     */
+    if (mode === "dpp") {
+      setActiveSubject("maths");
+    }
+  };
+
+  /*
+   * --------------------------------------------------------
+   * DPP SUBJECT
+   * --------------------------------------------------------
+   */
+
+  const handleSubjectChange = (
+    subject
+  ) => {
+    if (!subject) {
+      return;
+    }
+
+    setActiveSubject(subject);
+  };
+
+  /*
+   * --------------------------------------------------------
+   * START TEST
+   * --------------------------------------------------------
+   */
+
+   /*
+  |--------------------------------------------------------------------------
+  | START TEST
+  |--------------------------------------------------------------------------
+  */
+
+  const handleStartTest = (test) => {
+    if (!test?.id) {
+      return;
+    }
+
+    const testSeries =
+      test?.series ||
+      activeSeries ||
+      "free";
+
+    router.push(
+      `/test/${encodeURIComponent(
+        testSeries
+      )}/${encodeURIComponent(
+        test.id
+      )}/instructions`
+    );
+  };
+
+  /*
+   * --------------------------------------------------------
+   * PROFILE
+   * --------------------------------------------------------
+   */
+
+  const handleProfile = () => {
+    setProfileOpen(false);
+    setMobileMenuOpen(false);
+
+    router.push(
+      "/dashboard/profile"
+    );
+  };
+
+  /*
+   * --------------------------------------------------------
+   * HISTORY
+   * --------------------------------------------------------
+   */
+
+  const handleHistory = () => {
+    setProfileOpen(false);
+    setMobileMenuOpen(false);
+
+    router.push(
+      "/dashboard/history"
+    );
+  };
+
+  /*
+   * --------------------------------------------------------
+   * DISPLAY NAME
+   * --------------------------------------------------------
+   */
+
+  const displayName =
+    user?.displayName ||
+    user?.username ||
+    "Student";
+
+  /*
+   * --------------------------------------------------------
+   * UI
+   * --------------------------------------------------------
+   */
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.js
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <main className="min-h-screen bg-[#f7f8fb] text-slate-900">
+      {/* ------------------------------------------------------ */}
+      {/* HEADER                                                 */}
+      {/* ------------------------------------------------------ */}
+
+      <DashboardHeader
+        user={user}
+        displayName={displayName}
+        profileOpen={profileOpen}
+        setProfileOpen={
+          setProfileOpen
+        }
+        mobileMenuOpen={
+          mobileMenuOpen
+        }
+        setMobileMenuOpen={
+          setMobileMenuOpen
+        }
+        handleHistory={
+          handleHistory
+        }
+        handleProfile={
+          handleProfile
+        }
+      />
+
+      <div className="mx-auto max-w-360 px-4 py-7 sm:px-6 lg:px-8 lg:py-9">
+        {/* ---------------------------------------------------- */}
+        {/* HERO                                                 */}
+        {/* ---------------------------------------------------- */}
+
+        <section className="mb-8">
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[#ef1118]">
+            SpiderMan Test Series
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+
+          <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">
+            Hey, {displayName} 👋
+          </h1>
+
+          <p className="mt-2 max-w-xl text-sm leading-6 text-slate-500">
+            Practice smarter, track your attempts,
+            and improve one test at a time.
+          </p>
+        </section>
+
+        {/* ---------------------------------------------------- */}
+        {/* SERIES CARDS                                         */}
+        {/* ---------------------------------------------------- */}
+
+        <SeriesCards
+          activeSeries={activeSeries}
+          hasSpiderManAccess={
+            Boolean(access?.spiderman)
+          }
+          onSeriesClick={
+            handleSeriesClick
+          }
+        />
+
+        {/* ---------------------------------------------------- */}
+        {/* SELECTED SERIES CONTENT                              */}
+        {/* ---------------------------------------------------- */}
+
+        <motion.section
+          key={activeSeries}
+          initial={{
+            opacity: 0,
+            y: 10,
+          }}
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+          transition={{
+            duration: 0.25,
+          }}
+          className="mt-8"
+        >
+          {/* Series title */}
+
+          <div className="mb-5">
+            <h2 className="text-xl font-black tracking-tight text-slate-950 sm:text-2xl">
+              {activeSeries ===
+              "spiderman"
+                ? "SpiderMan"
+                : "Free"}
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Choose how you want to practice.
+            </p>
+          </div>
+
+          {/* -------------------------------------------------- */}
+          {/* PRACTICE MODES                                     */}
+          {/* -------------------------------------------------- */}
+
+          <PracticeModes
+            activeMode={activeMode}
+            onModeChange={
+              handleModeChange
+            }
+          />
+
+          {/* -------------------------------------------------- */}
+          {/* DPP SUBJECTS                                       */}
+          {/* -------------------------------------------------- */}
+
+          {activeMode === "dpp" ? (
+            <DPPSubjects
+              activeSubject={
+                activeSubject
+              }
+              onSubjectChange={
+                handleSubjectChange
+              }
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+          ) : null}
+
+          {/* -------------------------------------------------- */}
+          {/* PRACTICE LIBRARY                                   */}
+          {/* -------------------------------------------------- */}
+
+          <PracticeLibrary
+            activeSeries={
+              activeSeries
+            }
+            activeMode={
+              activeMode
+            }
+            activeSubject={
+              activeSubject
+            }
+            onStartTest={
+              handleStartTest
+            }
+          />
+        </motion.section>
+      </div>
+
+      {/* ------------------------------------------------------ */}
+      {/* PREMIUM ACCESS MODAL                                   */}
+      {/* ------------------------------------------------------ */}
+
+      <AccessModal
+        open={accessModalOpen}
+        seriesName="SpiderMan"
+        onClose={() =>
+          setAccessModalOpen(false)
+        }
+      />
+    </main>
   );
 }
