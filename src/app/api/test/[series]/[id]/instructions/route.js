@@ -5,7 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 
 /*
 |--------------------------------------------------------------------------
-| Series configuration
+| SERIES CONFIG
 |--------------------------------------------------------------------------
 */
 
@@ -15,6 +15,7 @@ const SERIES_CONFIG = {
     testTable: "free_tests",
     sectionTable: "free_test_sections",
     questionTable: "free_questions",
+    attemptTable: "free_test_attempts",
   },
 
   asspire: {
@@ -22,6 +23,7 @@ const SERIES_CONFIG = {
     testTable: "asspire_tests",
     sectionTable: "asspire_test_sections",
     questionTable: "asspire_questions",
+    attemptTable: "asspire_test_attempts",
   },
 
   imppetus: {
@@ -29,6 +31,7 @@ const SERIES_CONFIG = {
     testTable: "imppetus_tests",
     sectionTable: "imppetus_test_sections",
     questionTable: "imppetus_questions",
+    attemptTable: "imppetus_test_attempts",
   },
 
   spiderman: {
@@ -36,12 +39,13 @@ const SERIES_CONFIG = {
     testTable: "spiderman_tests",
     sectionTable: "spiderman_test_sections",
     questionTable: "spiderman_questions",
+    attemptTable: "spiderman_test_attempts",
   },
 };
 
 /*
 |--------------------------------------------------------------------------
-| Helpers
+| HELPERS
 |--------------------------------------------------------------------------
 */
 
@@ -54,27 +58,45 @@ function normalizeSeries(value) {
 function normalizeId(value) {
   const id = Number(value);
 
-  if (!Number.isInteger(id) || id <= 0) {
+  if (
+    !Number.isInteger(id) ||
+    id <= 0
+  ) {
     return null;
   }
 
   return id;
 }
 
-function jsonError(message, status = 400, code = null) {
+function jsonError(
+  message,
+  status = 400,
+  code = null
+) {
   return NextResponse.json(
     {
       error: message,
-      ...(code ? { code } : {}),
+      ...(code
+        ? {
+            code,
+          }
+        : {}),
     },
-    { status }
+    {
+      status,
+    }
   );
 }
 
-function toNumber(value, fallback = 0) {
+function toNumber(
+  value,
+  fallback = 0
+) {
   const n = Number(value);
 
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n)
+    ? n
+    : fallback;
 }
 
 function formatMarkValue(value) {
@@ -89,29 +111,109 @@ function formatMarkValue(value) {
 
 /*
 |--------------------------------------------------------------------------
-| GET /api/test/[series]/[id]/instructions
+| DATABASE DATE
+|--------------------------------------------------------------------------
+|
+| Supports:
+|
+| YYYY-MM-DD HH:mm:ss
+| YYYY-MM-DDTHH:mm:ss
+| ISO timestamps
+|
+*/
+
+function parseDatabaseDate(value) {
+  if (!value) {
+    return NaN;
+  }
+
+  const text =
+    String(value).trim();
+
+  if (!text) {
+    return NaN;
+  }
+
+  /*
+   * SQLite / Turso:
+   *
+   * 2026-09-10 18:40:00
+   */
+
+  if (
+    text.length === 19 &&
+    text[4] === "-" &&
+    text[7] === "-" &&
+    text[10] === " " &&
+    text[13] === ":" &&
+    text[16] === ":"
+  ) {
+    return new Date(
+      `${text.replace(
+        " ",
+        "T"
+      )}Z`
+    ).getTime();
+  }
+
+  /*
+   * ISO:
+   *
+   * 2026-09-10T18:40:00Z
+   */
+
+  const parsed =
+    new Date(text).getTime();
+
+  return parsed;
+}
+
+/*
+|--------------------------------------------------------------------------
+| GET
+| /api/test/[series]/[id]/instructions
 |--------------------------------------------------------------------------
 */
 
-export async function GET(request, { params }) {
+export async function GET(
+  request,
+  { params }
+) {
   try {
-    const { series: rawSeries, id: rawId } =
-      await params;
+    /*
+    |----------------------------------------------------------------------
+    | PARAMS
+    |----------------------------------------------------------------------
+    */
 
-    const series = normalizeSeries(rawSeries);
-    const testId = normalizeId(rawId);
+    const {
+      series: rawSeries,
+      id: rawId,
+    } = await params;
 
-    if (!SERIES_CONFIG[series]) {
+    const series =
+      normalizeSeries(
+        rawSeries
+      );
+
+    const testId =
+      normalizeId(rawId);
+
+    if (
+      !SERIES_CONFIG[series]
+    ) {
       return jsonError(
         "Invalid test series.",
-        400
+        400,
+        "INVALID_SERIES"
       );
     }
 
     if (!testId) {
       return jsonError(
         "Invalid test ID.",
-        400
+        400,
+        "INVALID_TEST_ID"
       );
     }
 
@@ -119,9 +221,9 @@ export async function GET(request, { params }) {
       SERIES_CONFIG[series];
 
     /*
-    |--------------------------------------------------------------------------
-    | Authentication
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | AUTHENTICATION
+    |----------------------------------------------------------------------
     */
 
     const currentUser =
@@ -130,39 +232,51 @@ export async function GET(request, { params }) {
     if (!currentUser?.id) {
       return jsonError(
         "Please login to continue.",
-        401
+        401,
+        "UNAUTHORIZED"
       );
     }
 
-    const userId = Number(
-      currentUser.id
-    );
+    const userId =
+      Number(
+        currentUser.id
+      );
+
+    if (
+      !Number.isInteger(
+        userId
+      ) ||
+      userId <= 0
+    ) {
+      return jsonError(
+        "Invalid user session.",
+        401,
+        "INVALID_SESSION"
+      );
+    }
 
     /*
-    |--------------------------------------------------------------------------
-    | Load fresh user/session state
-    |--------------------------------------------------------------------------
-    |
-    | JWT alone is not enough. We also verify that the account and
-    | currently active session still match.
-    |
+    |----------------------------------------------------------------------
+    | FRESH USER / SESSION STATE
+    |----------------------------------------------------------------------
     */
 
-    const userResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          username,
-          role,
-          is_active,
-          active_session_id,
-          active_device_id
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-      `,
-      args: [userId],
-    });
+    const userResult =
+      await db.execute({
+        sql: `
+          SELECT
+            id,
+            username,
+            role,
+            is_active,
+            active_session_id,
+            active_device_id
+          FROM users
+          WHERE id = ?
+          LIMIT 1
+        `,
+        args: [userId],
+      });
 
     const user =
       userResult.rows?.[0];
@@ -170,14 +284,20 @@ export async function GET(request, { params }) {
     if (!user) {
       return jsonError(
         "User account not found.",
-        401
+        401,
+        "USER_NOT_FOUND"
       );
     }
 
-    if (Number(user.is_active) !== 1) {
+    if (
+      Number(
+        user.is_active
+      ) !== 1
+    ) {
       return jsonError(
         "Your account is inactive.",
-        403
+        403,
+        "ACCOUNT_INACTIVE"
       );
     }
 
@@ -216,52 +336,54 @@ export async function GET(request, { params }) {
     }
 
     /*
-    |--------------------------------------------------------------------------
-    | Load test
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | LOAD TEST
+    |----------------------------------------------------------------------
     */
 
-    const testResult = await db.execute({
-      sql: `
-        SELECT
-          t.id,
-          t.category_id,
-          t.title,
-          t.slug,
-          t.description,
-          t.duration_minutes,
-          t.total_questions,
-          t.total_marks,
-          t.is_published,
-          t.created_at,
-          t.updated_at,
+    const testResult =
+      await db.execute({
+        sql: `
+          SELECT
+            t.id,
+            t.category_id,
+            t.title,
+            t.slug,
+            t.description,
+            t.duration_minutes,
+            t.total_questions,
+            t.total_marks,
+            t.is_published,
+            t.created_at,
+            t.updated_at,
 
-          c.name AS category_name,
-          c.slug AS category_slug,
+            c.name AS category_name,
+            c.slug AS category_slug,
 
-          ts.id AS series_id,
-          ts.name AS series_name,
-          ts.slug AS series_slug,
-          ts.is_paid AS series_is_paid
+            ts.id AS series_id,
+            ts.name AS series_name,
+            ts.slug AS series_slug,
+            ts.is_paid AS series_is_paid
 
-        FROM ${config.testTable} t
+          FROM ${config.testTable} t
 
-        LEFT JOIN test_categories c
-          ON c.id = t.category_id
+          LEFT JOIN test_categories c
+            ON c.id = t.category_id
 
-        LEFT JOIN test_series ts
-          ON ts.id = ?
+          LEFT JOIN test_series ts
+            ON ts.id = ?
 
-        WHERE t.id = ?
-          AND t.is_published = 1
+          WHERE
+            t.id = ?
+            AND t.is_published = 1
 
-        LIMIT 1
-      `,
-      args: [
-        config.seriesId,
-        testId,
-      ],
-    });
+          LIMIT 1
+        `,
+        args: [
+          config.seriesId,
+          testId,
+        ],
+      });
 
     const test =
       testResult.rows?.[0];
@@ -269,14 +391,15 @@ export async function GET(request, { params }) {
     if (!test) {
       return jsonError(
         "Test not found.",
-        404
+        404,
+        "TEST_NOT_FOUND"
       );
     }
 
     /*
-    |--------------------------------------------------------------------------
-    | Series access
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | SERIES ACCESS
+    |----------------------------------------------------------------------
     */
 
     const seriesIsPaid =
@@ -290,7 +413,8 @@ export async function GET(request, { params }) {
           sql: `
             SELECT id
             FROM user_series_access
-            WHERE user_id = ?
+            WHERE
+              user_id = ?
               AND series_id = ?
               AND is_active = 1
               AND (
@@ -317,14 +441,15 @@ export async function GET(request, { params }) {
     }
 
     /*
-    |--------------------------------------------------------------------------
-    | Category / mode
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | CATEGORY / MODE
+    |----------------------------------------------------------------------
     */
 
     const categorySlug =
       String(
-        test.category_slug || ""
+        test.category_slug ||
+          ""
       )
         .trim()
         .toLowerCase();
@@ -333,9 +458,9 @@ export async function GET(request, { params }) {
       categorySlug === "dpp";
 
     /*
-    |--------------------------------------------------------------------------
-    | Load sections
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | SECTIONS
+    |----------------------------------------------------------------------
     */
 
     const sectionsResult =
@@ -352,37 +477,38 @@ export async function GET(request, { params }) {
             timer_group
           FROM ${config.sectionTable}
           WHERE test_id = ?
-          ORDER BY section_order ASC, id ASC
+          ORDER BY
+            section_order ASC,
+            id ASC
         `,
         args: [testId],
       });
 
     const rawSections =
-      sectionsResult.rows || [];
+      sectionsResult.rows ||
+      [];
 
     /*
-    |--------------------------------------------------------------------------
-    | Calculate section marks from questions
-    |--------------------------------------------------------------------------
-    |
-    | We intentionally DON'T duplicate marks into the section table.
-    | The source of truth is:
-    |
-    | questions.marks
-    | questions.negative_marks
-    |
+    |----------------------------------------------------------------------
+    | SECTION MARKING
+    |----------------------------------------------------------------------
     */
 
     const sectionIds =
       rawSections
-        .map((section) =>
-          Number(section.id)
+        .map(
+          (section) =>
+            Number(section.id)
         )
-        .filter(Boolean);
+        .filter(
+          (id) => id > 0
+        );
 
     let markRows = [];
 
-    if (sectionIds.length > 0) {
+    if (
+      sectionIds.length > 0
+    ) {
       const placeholders =
         sectionIds
           .map(() => "?")
@@ -397,7 +523,8 @@ export async function GET(request, { params }) {
               negative_marks,
               COUNT(*) AS question_count
             FROM ${config.questionTable}
-            WHERE test_id = ?
+            WHERE
+              test_id = ?
               AND section_id IN (${placeholders})
             GROUP BY
               section_id,
@@ -413,61 +540,68 @@ export async function GET(request, { params }) {
         });
 
       markRows =
-        marksResult.rows || [];
+        marksResult.rows ||
+        [];
     }
 
     /*
-    |--------------------------------------------------------------------------
-    | Build section response
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | BUILD SECTIONS
+    |----------------------------------------------------------------------
     */
 
     const sections =
       rawSections.map(
         (section) => {
           const sectionId =
-            Number(section.id);
+            Number(
+              section.id
+            );
 
           const rowsForSection =
             markRows.filter(
               (row) =>
                 Number(
                   row.section_id
-                ) === sectionId
+                ) ===
+                sectionId
             );
 
           /*
-           * Single marking scheme
-           *
-           * Example:
-           * Maths => +12 / -3
+           * Group distinct marking schemes.
            */
+
           const distinctMarks =
             Array.from(
               new Map(
                 rowsForSection.map(
                   (row) => {
-                    const key =
-                      `${Number(
+                    const positive =
+                      Number(
                         row.marks
-                      )}|${Number(
+                      );
+
+                    const negative =
+                      Number(
                         row.negative_marks
-                      )}`;
+                      );
+
+                    const key =
+                      `${positive}|${negative}`;
 
                     return [
                       key,
                       {
                         positiveMarks:
-                          Number(
-                            row.marks
-                          ),
+                          positive,
+
                         negativeMarks:
-                          Number(
-                            row.negative_marks
-                          ),
+                          negative,
+
                         questionCount:
                           Number(
-                            row.question_count
+                            row.question_count ||
+                              0
                           ),
                       },
                     ];
@@ -476,15 +610,19 @@ export async function GET(request, { params }) {
               ).values()
             );
 
-          let positiveMarks = 0;
-          let negativeMarks = 0;
+          let positiveMarks =
+            0;
+
+          let negativeMarks =
+            0;
 
           /*
-           * If every question in this section uses the same
-           * marking scheme, expose the exact values.
+           * Single marking scheme.
            */
+
           if (
-            distinctMarks.length === 1
+            distinctMarks.length ===
+            1
           ) {
             positiveMarks =
               distinctMarks[0]
@@ -493,22 +631,24 @@ export async function GET(request, { params }) {
             negativeMarks =
               distinctMarks[0]
                 .negativeMarks;
-          } else if (
-            distinctMarks.length > 1
+          }
+
+          /*
+           * Mixed marking scheme.
+           *
+           * Example:
+           * CS + English section.
+           *
+           * The instruction UI needs a simple
+           * representative value.
+           *
+           * Actual scoring remains question-level.
+           */
+
+          else if (
+            distinctMarks.length >
+            1
           ) {
-            /*
-             * Mixed-mark section.
-             *
-             * Current Instructions UI expects numbers, so use the
-             * highest applicable positive/negative value rather
-             * than returning strings which the UI would render as 0.
-             *
-             * For CS + English combined:
-             * +6 / -1.5 is displayed.
-             *
-             * The actual scoring remains question-level and is
-             * handled from each question's own marks.
-             */
             positiveMarks =
               Math.max(
                 ...distinctMarks.map(
@@ -527,9 +667,13 @@ export async function GET(request, { params }) {
           }
 
           return {
-            id: sectionId,
+            id:
+              sectionId,
+
             test_id:
-              Number(section.test_id),
+              Number(
+                section.test_id
+              ),
 
             section_name:
               section.section_name,
@@ -574,9 +718,6 @@ export async function GET(request, { params }) {
                 negativeMarks
               ),
 
-            /*
-             * Extra metadata for future UI / scoring.
-             */
             marking_schemes:
               distinctMarks,
           };
@@ -584,27 +725,42 @@ export async function GET(request, { params }) {
       );
 
     /*
-    |--------------------------------------------------------------------------
-    | Calculate total duration
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | DURATION
+    |----------------------------------------------------------------------
     */
 
     const sectionDurations =
       sections
-        .map((section) =>
-          Number(
-            section.duration_minutes
-          )
+        .map(
+          (section) =>
+            Number(
+              section.duration_minutes
+            )
         )
         .filter(
           (minutes) =>
-            Number.isFinite(minutes) &&
+            Number.isFinite(
+              minutes
+            ) &&
             minutes > 0
         );
 
+    /*
+     * DPP:
+     * stopwatch, no fixed duration.
+     *
+     * Sectional:
+     * sum section durations.
+     *
+     * Normal:
+     * test duration.
+     */
+
     const sectional =
       !isDpp &&
-      sectionDurations.length > 0;
+      sectionDurations.length >
+        0;
 
     const totalSectionDuration =
       sectionDurations.reduce(
@@ -624,9 +780,9 @@ export async function GET(request, { params }) {
           );
 
     /*
-    |--------------------------------------------------------------------------
-    | Attempt information
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | ATTEMPTS
+    |----------------------------------------------------------------------
     */
 
     const attemptsResult =
@@ -639,10 +795,12 @@ export async function GET(request, { params }) {
             started_at,
             submitted_at,
             deadline_at
-          FROM ${config.attemptTable || `${series}_test_attempts`}
-          WHERE user_id = ?
+          FROM ${config.attemptTable}
+          WHERE
+            user_id = ?
             AND test_id = ?
-          ORDER BY id DESC
+          ORDER BY
+            id DESC
         `,
         args: [
           userId,
@@ -651,79 +809,159 @@ export async function GET(request, { params }) {
       });
 
     const attempts =
-      attemptsResult.rows || [];
+      Array.isArray(
+        attemptsResult.rows
+      )
+        ? attemptsResult.rows
+        : [];
 
     /*
-    |--------------------------------------------------------------------------
-    | Mark stale in-progress attempts as expired
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | ACTIVE ATTEMPT
+    |----------------------------------------------------------------------
     */
 
     const nowMs =
       Date.now();
 
-    const activeAttempt =
+    let active =
       attempts.find(
         (item) =>
-          item.status ===
+          String(
+            item.status
+          ) ===
           "in_progress"
-      );
+      ) || null;
 
-    let active =
-      activeAttempt || null;
+    /*
+    |----------------------------------------------------------------------
+    | EXPIRE STALE ATTEMPT
+    |----------------------------------------------------------------------
+    |
+    | IMPORTANT:
+    |
+    | Do NOT use updated_at here.
+    |
+    | Your attempt tables don't require an updated_at column.
+    |
+    */
 
     if (
-      active?.deadline_at &&
-      new Date(
-        active.deadline_at
-      ).getTime() <= nowMs
+      active?.deadline_at
     ) {
-      await db.execute({
-        sql: `
-          UPDATE ${config.attemptTable || `${series}_test_attempts`}
-          SET
-            status = 'expired',
-            submitted_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-            AND status = 'in_progress'
-        `,
-        args: [
-          Number(active.id),
-        ],
-      });
+      const deadlineMs =
+        parseDatabaseDate(
+          active.deadline_at
+        );
 
-      active = null;
+      if (
+        Number.isFinite(
+          deadlineMs
+        ) &&
+        deadlineMs <=
+          nowMs
+      ) {
+        console.log(
+          `[instructions] Expiring stale attempt ${series}/${testId} attempt=${active.id}`
+        );
+
+        /*
+         * Only use columns which are part of
+         * the existing attempt schema.
+         */
+
+        await db.execute({
+          sql: `
+            UPDATE ${config.attemptTable}
+            SET
+              status = 'auto_submitted',
+              submitted_at = CURRENT_TIMESTAMP
+            WHERE
+              id = ?
+              AND user_id = ?
+              AND test_id = ?
+              AND status = 'in_progress'
+          `,
+          args: [
+            Number(
+              active.id
+            ),
+            userId,
+            testId,
+          ],
+        });
+
+        active = null;
+      }
     }
 
     /*
-    |--------------------------------------------------------------------------
-    | Completed attempts
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | COMPLETED ATTEMPTS
+    |----------------------------------------------------------------------
     */
 
-    const completedStatuses = new Set([
-      "submitted",
-      "auto_submitted",
-      "expired",
-    ]);
+    const completedStatuses =
+      new Set([
+        "submitted",
+        "auto_submitted",
+        "expired",
+      ]);
 
     const submittedCount =
       attempts.filter(
         (item) =>
           completedStatuses.has(
-            item.status
+            String(
+              item.status
+            )
           )
       ).length;
 
-    const maxAttempts = 3;
+    /*
+     * The stale attempt that was just changed
+     * from in_progress -> auto_submitted
+     * belongs to completed attempts too.
+     */
+
+    const staleWasExpired =
+      attempts.some(
+        (item) =>
+          String(
+            item.status
+          ) === "in_progress" &&
+          item.deadline_at &&
+          Number.isFinite(
+            parseDatabaseDate(
+              item.deadline_at
+            )
+          ) &&
+          parseDatabaseDate(
+            item.deadline_at
+          ) <= nowMs
+      );
+
+    const effectiveSubmittedCount =
+      submittedCount +
+      (staleWasExpired
+        ? 1
+        : 0);
+
+    const maxAttempts =
+      3;
 
     const remainingAttempts =
       Math.max(
         0,
         maxAttempts -
-          submittedCount
+          effectiveSubmittedCount
       );
+
+    /*
+    |----------------------------------------------------------------------
+    | ATTEMPT STATE
+    |----------------------------------------------------------------------
+    */
 
     const state =
       remainingAttempts <= 0
@@ -733,15 +971,20 @@ export async function GET(request, { params }) {
         : "new";
 
     /*
-    |--------------------------------------------------------------------------
-    | Final response
-    |--------------------------------------------------------------------------
+    |----------------------------------------------------------------------
+    | RESPONSE
+    |----------------------------------------------------------------------
     */
 
     return NextResponse.json(
       {
+        success: true,
+
         test: {
-          id: Number(test.id),
+          id:
+            Number(
+              test.id
+            ),
 
           title:
             test.title,
@@ -814,9 +1057,10 @@ export async function GET(request, { params }) {
 
           active: active
             ? {
-                id: Number(
-                  active.id
-                ),
+                id:
+                  Number(
+                    active.id
+                  ),
 
                 attemptNumber:
                   Number(
@@ -847,7 +1091,8 @@ export async function GET(request, { params }) {
               }
             : null,
 
-          submittedCount,
+          submittedCount:
+            effectiveSubmittedCount,
 
           maxAttempts,
 
@@ -856,6 +1101,7 @@ export async function GET(request, { params }) {
       },
       {
         status: 200,
+
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
@@ -874,7 +1120,9 @@ export async function GET(request, { params }) {
           error?.message ||
           "Unable to load test instructions.",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }
