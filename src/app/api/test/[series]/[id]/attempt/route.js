@@ -210,9 +210,19 @@ async function getAuthenticatedUser() {
     null
   );
 
+  /*
+   * SESSION VALIDATION
+   *
+   * JWT must contain a session ID.
+   * DB must contain the currently active session ID.
+   * Both must match exactly.
+   *
+   * This also correctly rejects an old JWT when
+   * active_session_id has been cleared/revoked in DB.
+   */
   if (
-    jwtSessionId &&
-    user.active_session_id &&
+    !jwtSessionId ||
+    !user.active_session_id ||
     String(jwtSessionId) !== String(user.active_session_id)
   ) {
     return {
@@ -225,9 +235,16 @@ async function getAuthenticatedUser() {
     };
   }
 
+  /*
+   * DEVICE VALIDATION
+   *
+   * JWT must contain a device ID.
+   * DB must contain the currently active device ID.
+   * Both must match exactly.
+   */
   if (
-    jwtDeviceId &&
-    user.active_device_id &&
+    !jwtDeviceId ||
+    !user.active_device_id ||
     String(jwtDeviceId) !== String(user.active_device_id)
   ) {
     return {
@@ -1671,6 +1688,32 @@ export async function POST(request, { params }) {
         {
           status: 200,
         }
+      );
+    }
+
+    /* -------------------------------------------------------
+       PHASE 3:
+       PUBLISHED CHECK FOR NEW ATTEMPTS ONLY
+
+       Existing active attempts above are allowed to resume.
+
+       A brand-new attempt can only be created when the test
+       is currently published.
+    ------------------------------------------------------- */
+
+    if (
+      Number(
+        firstDefined(
+          testRow.is_published,
+          testRow.isPublished,
+          0
+        )
+      ) !== 1
+    ) {
+      return jsonError(
+        "This test is not currently available.",
+        403,
+        "TEST_NOT_PUBLISHED"
       );
     }
 
