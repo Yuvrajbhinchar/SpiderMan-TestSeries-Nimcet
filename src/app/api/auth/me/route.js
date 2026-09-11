@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/turso";
+
 import {
   getCurrentUser,
   clearAuthCookie,
@@ -8,128 +9,247 @@ import {
 
 export async function GET() {
   try {
-    const authUser = await getCurrentUser();
+    /*
+    |--------------------------------------------------------------------------
+    | JWT
+    |--------------------------------------------------------------------------
+    */
+
+    const authUser =
+      await getCurrentUser();
 
     if (!authUser) {
       return NextResponse.json(
         {
-          authenticated: false,
+          authenticated:
+            false,
+
           user: null,
+
           access: {},
         },
-        { status: 401 }
+        {
+          status: 401,
+        }
       );
     }
 
-    const userResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          username,
-          display_name,
-          role,
-          is_active,
-          active_session_id,
-          active_device_id
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-      `,
-      args: [authUser.id],
-    });
+    /*
+    |--------------------------------------------------------------------------
+    | USER + SESSION
+    |--------------------------------------------------------------------------
+    |
+    | ONE DB query.
+    |
+    | We do NOT query user_series_access here.
+    |--------------------------------------------------------------------------
+    */
 
-    if (userResult.rows.length === 0) {
+    const userResult =
+      await db.execute({
+        sql: `
+          SELECT
+            id,
+            username,
+            display_name,
+            role,
+            is_active,
+            active_session_id,
+            active_device_id
+          FROM users
+          WHERE
+            id = ?
+          LIMIT 1
+        `,
+
+        args: [
+          authUser.id,
+        ],
+      });
+
+    const user =
+      userResult.rows?.[0];
+
+    if (!user) {
       await clearAuthCookie();
 
       return NextResponse.json(
         {
-          authenticated: false,
+          authenticated:
+            false,
+
           user: null,
+
           access: {},
         },
-        { status: 401 }
+        {
+          status: 401,
+        }
       );
     }
 
-    const user = userResult.rows[0];
-
     /*
-     * One-device validation.
-     */
+    |--------------------------------------------------------------------------
+    | ACCOUNT
+    |--------------------------------------------------------------------------
+    */
+
     if (
-      !Number(user.is_active) ||
-      user.active_session_id !==
-        authUser.sessionId ||
-      user.active_device_id !==
-        authUser.deviceId
+      Number(
+        user.is_active
+      ) !== 1
     ) {
       await clearAuthCookie();
 
       return NextResponse.json(
         {
-          authenticated: false,
+          authenticated:
+            false,
+
           user: null,
+
           access: {},
-          reason: "session_invalid",
+
+          reason:
+            "account_inactive",
         },
-        { status: 401 }
+        {
+          status: 401,
+        }
       );
     }
 
     /*
-     * Fetch series access once during bootstrap.
-     */
-    const accessResult = await db.execute({
-      sql: `
-        SELECT
-          usa.series_id,
-          ts.slug,
-          usa.expires_at,
-          usa.is_active
-        FROM user_series_access usa
-        INNER JOIN test_series ts
-          ON ts.id = usa.series_id
-        WHERE usa.user_id = ?
-          AND usa.is_active = 1
-          AND (
-            usa.expires_at IS NULL
-            OR usa.expires_at > CURRENT_TIMESTAMP
-          )
-          AND ts.is_active = 1
-      `,
-      args: [authUser.id],
-    });
+    |--------------------------------------------------------------------------
+    | SESSION
+    |--------------------------------------------------------------------------
+    */
 
-    const access = {
-      free: false,
-      asspire: false,
-      imppetus: false,
-      spiderman: false,
-    };
+    if (
+      String(
+        user.active_session_id ||
+          ""
+      ) !==
+        String(
+          authUser.sessionId ||
+            ""
+        )
+    ) {
+      await clearAuthCookie();
 
-    for (const row of accessResult.rows) {
-      if (row.slug in access) {
-        access[row.slug] = true;
-      }
+      return NextResponse.json(
+        {
+          authenticated:
+            false,
+
+          user: null,
+
+          access: {},
+
+          reason:
+            "session_invalid",
+        },
+        {
+          status: 401,
+        }
+      );
     }
 
     /*
-     * Free series is public.
-     */
-    access.free = true;
+    |--------------------------------------------------------------------------
+    | DEVICE
+    |--------------------------------------------------------------------------
+    */
 
-    return NextResponse.json({
-      authenticated: true,
+    if (
+      String(
+        user.active_device_id ||
+          ""
+      ) !==
+        String(
+          authUser.deviceId ||
+            ""
+        )
+    ) {
+      await clearAuthCookie();
 
-      user: {
-        id: Number(user.id),
-        username: user.username,
-        displayName: user.display_name,
-        role: user.role,
+      return NextResponse.json(
+        {
+          authenticated:
+            false,
+
+          user: null,
+
+          access: {},
+
+          reason:
+            "session_invalid",
+        },
+        {
+          status: 401,
+        }
+      );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ACCESS
+    |--------------------------------------------------------------------------
+    |
+    | ONLY PAID SERIES.
+    |
+    | Free is intentionally absent because free is public
+    | to every authenticated user.
+    |--------------------------------------------------------------------------
+    */
+
+    const access =
+      authUser.seriesAccess ||
+      {};
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
+    return NextResponse.json(
+      {
+        authenticated:
+          true,
+
+        user: {
+          id: Number(
+            user.id
+          ),
+
+          username:
+            String(
+              user.username
+            ),
+
+          displayName:
+            user.display_name ||
+            null,
+
+          role:
+            String(
+              user.role ||
+                "user"
+            ),
+        },
+
+        access,
       },
+      {
+        status: 200,
 
-      access,
-    });
+        headers: {
+          "Cache-Control":
+            "private, no-store",
+        },
+      }
+    );
   } catch (error) {
     console.error(
       "Auth me API error:",
@@ -138,9 +258,12 @@ export async function GET() {
 
     return NextResponse.json(
       {
-        error: "Unable to verify account.",
+        error:
+          "Unable to verify account.",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }
