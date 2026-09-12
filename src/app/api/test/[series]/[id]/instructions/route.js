@@ -1,53 +1,44 @@
 import { NextResponse } from "next/server";
-
 import { db } from "@/lib/turso";
 import { getCurrentUser } from "@/lib/auth";
 
-/*
-|--------------------------------------------------------------------------
-| SERIES CONFIG
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   SERIES CONFIG
+========================================================= */
 
 const SERIES_CONFIG = {
   free: {
     seriesId: 1,
     testTable: "free_tests",
-    sectionTable: "free_test_sections",
     questionTable: "free_questions",
-    attemptTable: "free_test_attempts",
+    optionTable: "free_question_options",
   },
 
   asspire: {
     seriesId: 2,
     testTable: "asspire_tests",
-    sectionTable: "asspire_test_sections",
     questionTable: "asspire_questions",
-    attemptTable: "asspire_test_attempts",
+    optionTable: "asspire_question_options",
   },
 
   imppetus: {
     seriesId: 3,
     testTable: "imppetus_tests",
-    sectionTable: "imppetus_test_sections",
     questionTable: "imppetus_questions",
-    attemptTable: "imppetus_test_attempts",
+    optionTable: "imppetus_question_options",
   },
 
   spiderman: {
     seriesId: 4,
     testTable: "spiderman_tests",
-    sectionTable: "spiderman_test_sections",
     questionTable: "spiderman_questions",
-    attemptTable: "spiderman_test_attempts",
+    optionTable: "spiderman_question_options",
   },
 };
 
-/*
-|--------------------------------------------------------------------------
-| HELPERS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function normalizeSeries(value) {
   return String(value || "")
@@ -58,14 +49,64 @@ function normalizeSeries(value) {
 function normalizeId(value) {
   const id = Number(value);
 
-  if (
-    !Number.isInteger(id) ||
-    id <= 0
-  ) {
+  if (!Number.isInteger(id) || id <= 0) {
     return null;
   }
 
   return id;
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function toNumber(value, fallback = 0) {
+  const number = Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : fallback;
+}
+
+function toBoolean(value) {
+  return (
+    value === true ||
+    value === 1 ||
+    value === "1"
+  );
+}
+
+function toIsoUtc(value) {
+  if (!value) {
+    return null;
+  }
+
+  const text = String(value);
+
+  if (
+    text.length === 19 &&
+    text[4] === "-" &&
+    text[7] === "-" &&
+    text[10] === " " &&
+    text[13] === ":" &&
+    text[16] === ":"
+  ) {
+    return `${text.replace(" ", "T")}Z`;
+  }
+
+  const date = new Date(text);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
 }
 
 function jsonError(
@@ -76,11 +117,7 @@ function jsonError(
   return NextResponse.json(
     {
       error: message,
-      ...(code
-        ? {
-            code,
-          }
-        : {}),
+      ...(code ? { code } : {}),
     },
     {
       status,
@@ -88,120 +125,35 @@ function jsonError(
   );
 }
 
-function toNumber(
-  value,
-  fallback = 0
-) {
-  const n = Number(value);
-
-  return Number.isFinite(n)
-    ? n
-    : fallback;
-}
-
-function formatMarkValue(value) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) {
-    return 0;
-  }
-
-  return n;
-}
-
-/*
-|--------------------------------------------------------------------------
-| DATABASE DATE
-|--------------------------------------------------------------------------
-|
-| Supports:
-|
-| YYYY-MM-DD HH:mm:ss
-| YYYY-MM-DDTHH:mm:ss
-| ISO timestamps
-|
-*/
-
-function parseDatabaseDate(value) {
-  if (!value) {
-    return NaN;
-  }
-
-  const text =
-    String(value).trim();
-
-  if (!text) {
-    return NaN;
-  }
-
-  /*
-   * SQLite / Turso:
-   *
-   * 2026-09-10 18:40:00
-   */
-
-  if (
-    text.length === 19 &&
-    text[4] === "-" &&
-    text[7] === "-" &&
-    text[10] === " " &&
-    text[13] === ":" &&
-    text[16] === ":"
-  ) {
-    return new Date(
-      `${text.replace(
-        " ",
-        "T"
-      )}Z`
-    ).getTime();
-  }
-
-  /*
-   * ISO:
-   *
-   * 2026-09-10T18:40:00Z
-   */
-
-  const parsed =
-    new Date(text).getTime();
-
-  return parsed;
-}
-
-/*
-|--------------------------------------------------------------------------
-| GET
-| /api/test/[series]/[id]/instructions
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   GET
+   /api/test/[series]/[id]/instructions
+========================================================= */
 
 export async function GET(
   request,
   { params }
 ) {
   try {
-    /*
-    |----------------------------------------------------------------------
-    | PARAMS
-    |----------------------------------------------------------------------
-    */
-
     const {
       series: rawSeries,
       id: rawId,
     } = await params;
 
     const series =
-      normalizeSeries(
-        rawSeries
-      );
+      normalizeSeries(rawSeries);
 
     const testId =
       normalizeId(rawId);
 
-    if (
-      !SERIES_CONFIG[series]
-    ) {
+    /* -------------------------------------------------------
+       VALIDATION
+    ------------------------------------------------------- */
+
+    const config =
+      SERIES_CONFIG[series];
+
+    if (!config) {
       return jsonError(
         "Invalid test series.",
         400,
@@ -217,14 +169,9 @@ export async function GET(
       );
     }
 
-    const config =
-      SERIES_CONFIG[series];
-
-    /*
-    |----------------------------------------------------------------------
-    | AUTHENTICATION
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       AUTH
+    ------------------------------------------------------- */
 
     const currentUser =
       await getCurrentUser();
@@ -238,14 +185,10 @@ export async function GET(
     }
 
     const userId =
-      Number(
-        currentUser.id
-      );
+      Number(currentUser.id);
 
     if (
-      !Number.isInteger(
-        userId
-      ) ||
+      !Number.isInteger(userId) ||
       userId <= 0
     ) {
       return jsonError(
@@ -255,11 +198,9 @@ export async function GET(
       );
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | FRESH USER / SESSION STATE
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       USER / SESSION VALIDATION
+    ------------------------------------------------------- */
 
     const userResult =
       await db.execute({
@@ -267,6 +208,8 @@ export async function GET(
           SELECT
             id,
             username,
+            email,
+            display_name,
             role,
             is_active,
             active_session_id,
@@ -290,9 +233,7 @@ export async function GET(
     }
 
     if (
-      Number(
-        user.is_active
-      ) !== 1
+      Number(user.is_active) !== 1
     ) {
       return jsonError(
         "Your account is inactive.",
@@ -302,8 +243,8 @@ export async function GET(
     }
 
     if (
-      currentUser.sessionId &&
-      user.active_session_id &&
+      !currentUser.sessionId ||
+      !user.active_session_id ||
       String(
         currentUser.sessionId
       ) !==
@@ -312,15 +253,15 @@ export async function GET(
         )
     ) {
       return jsonError(
-        "Your session has been revoked.",
+        "Your session is no longer active.",
         401,
         "SESSION_REVOKED"
       );
     }
 
     if (
-      currentUser.deviceId &&
-      user.active_device_id &&
+      !currentUser.deviceId ||
+      !user.active_device_id ||
       String(
         currentUser.deviceId
       ) !==
@@ -329,17 +270,15 @@ export async function GET(
         )
     ) {
       return jsonError(
-        "Your session is active on another device.",
+        "This device is no longer active.",
         401,
-        "SESSION_REVOKED"
+        "DEVICE_REVOKED"
       );
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | LOAD TEST
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       LOAD TEST
+    ------------------------------------------------------- */
 
     const testResult =
       await db.execute({
@@ -400,703 +339,407 @@ export async function GET(
     |----------------------------------------------------------------------
     | SERIES ACCESS
     |----------------------------------------------------------------------
+    |
+    | Free series are always accessible.
+    | Paid series access is checked from the verified JWT snapshot.
+    |
+    | IMPORTANT: no user_series_access entitlement query is performed
+    | on this request. Entitlement is loaded when the JWT is issued.
+    |----------------------------------------------------------------------
     */
 
-    const seriesIsPaid =
-      Number(
-        test.series_is_paid
-      ) === 1;
+    const hasSeriesAccess =
+      series === "free" ||
+      currentUser.seriesAccess?.[series] === true;
 
-    if (seriesIsPaid) {
-      const accessResult =
-        await db.execute({
-          sql: `
-            SELECT id
-            FROM user_series_access
-            WHERE
-              user_id = ?
-              AND series_id = ?
-              AND is_active = 1
-              AND (
-                expires_at IS NULL
-                OR expires_at > CURRENT_TIMESTAMP
-              )
-            LIMIT 1
-          `,
-          args: [
-            userId,
-            config.seriesId,
-          ],
-        });
-
-      if (
-        !accessResult.rows?.length
-      ) {
-        return jsonError(
-          "You do not have access to this test series.",
-          403,
-          "SERIES_ACCESS_REQUIRED"
-        );
-      }
+    if (!hasSeriesAccess) {
+      return jsonError(
+        "You do not have access to this test series.",
+        403,
+        "SERIES_ACCESS_REQUIRED"
+      );
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | CATEGORY / MODE
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       CATEGORY / MODE
+    ------------------------------------------------------- */
 
     const categorySlug =
       String(
-        test.category_slug ||
-          ""
+        test.category_slug || ""
       )
         .trim()
         .toLowerCase();
 
+    const categoryName =
+      firstDefined(
+        test.category_name,
+        null
+      );
+
     const isDpp =
       categorySlug === "dpp";
 
-    /*
-    |----------------------------------------------------------------------
-    | SECTIONS
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       QUESTIONS
+    ------------------------------------------------------- */
 
-    const sectionsResult =
+    const questionResult =
       await db.execute({
         sql: `
           SELECT
             id,
             test_id,
-            section_name,
-            section_order,
-            duration_minutes,
-            question_count,
-            is_sequential,
-            timer_group
-          FROM ${config.sectionTable}
+            section_id,
+            question_text,
+            explanation,
+            question_type,
+            marks,
+            negative_marks,
+            question_order
+          FROM ${config.questionTable}
           WHERE test_id = ?
           ORDER BY
-            section_order ASC,
+            question_order ASC,
             id ASC
         `,
         args: [testId],
       });
 
-    const rawSections =
-      sectionsResult.rows ||
-      [];
-
-    /*
-    |----------------------------------------------------------------------
-    | SECTION MARKING
-    |----------------------------------------------------------------------
-    */
-
-    const sectionIds =
-      rawSections
-        .map(
-          (section) =>
-            Number(section.id)
-        )
-        .filter(
-          (id) => id > 0
-        );
-
-    let markRows = [];
+    const rawQuestions =
+      Array.isArray(
+        questionResult.rows
+      )
+        ? questionResult.rows
+        : [];
 
     if (
-      sectionIds.length > 0
+      rawQuestions.length === 0
     ) {
-      const placeholders =
-        sectionIds
-          .map(() => "?")
-          .join(", ");
+      return jsonError(
+        "No questions were found for this test.",
+        422,
+        "NO_QUESTIONS"
+      );
+    }
 
-      const marksResult =
+    /* -------------------------------------------------------
+       OPTIONS
+    ------------------------------------------------------- */
+
+    const questionIds =
+      rawQuestions
+        .map(
+          (question) =>
+            Number(question.id)
+        )
+        .filter(
+          (id) =>
+            Number.isInteger(id) &&
+            id > 0
+        );
+
+    let rawOptions = [];
+
+    if (questionIds.length > 0) {
+      const placeholders =
+        questionIds
+          .map(() => "?")
+          .join(",");
+
+      const optionResult =
         await db.execute({
           sql: `
             SELECT
-              section_id,
-              marks,
-              negative_marks,
-              COUNT(*) AS question_count
-            FROM ${config.questionTable}
-            WHERE
-              test_id = ?
-              AND section_id IN (${placeholders})
-            GROUP BY
-              section_id,
-              marks,
-              negative_marks
+              id,
+              question_id,
+              option_label,
+              option_text,
+              option_order
+            FROM ${config.optionTable}
+            WHERE question_id IN (${placeholders})
             ORDER BY
-              section_id ASC
+              question_id ASC,
+              option_order ASC,
+              id ASC
           `,
-          args: [
-            testId,
-            ...sectionIds,
-          ],
+          args: questionIds,
         });
 
-      markRows =
-        marksResult.rows ||
-        [];
+      rawOptions =
+        Array.isArray(
+          optionResult.rows
+        )
+          ? optionResult.rows
+          : [];
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | BUILD SECTIONS
-    |----------------------------------------------------------------------
-    */
+    const optionsByQuestion =
+      new Map();
 
-    const sections =
-      rawSections.map(
-        (section) => {
-          const sectionId =
-            Number(
-              section.id
-            );
-
-          const rowsForSection =
-            markRows.filter(
-              (row) =>
-                Number(
-                  row.section_id
-                ) ===
-                sectionId
-            );
-
-          /*
-           * Group distinct marking schemes.
-           */
-
-          const distinctMarks =
-            Array.from(
-              new Map(
-                rowsForSection.map(
-                  (row) => {
-                    const positive =
-                      Number(
-                        row.marks
-                      );
-
-                    const negative =
-                      Number(
-                        row.negative_marks
-                      );
-
-                    const key =
-                      `${positive}|${negative}`;
-
-                    return [
-                      key,
-                      {
-                        positiveMarks:
-                          positive,
-
-                        negativeMarks:
-                          negative,
-
-                        questionCount:
-                          Number(
-                            row.question_count ||
-                              0
-                          ),
-                      },
-                    ];
-                  }
-                )
-              ).values()
-            );
-
-          let positiveMarks =
-            0;
-
-          let negativeMarks =
-            0;
-
-          /*
-           * Single marking scheme.
-           */
-
-          if (
-            distinctMarks.length ===
-            1
-          ) {
-            positiveMarks =
-              distinctMarks[0]
-                .positiveMarks;
-
-            negativeMarks =
-              distinctMarks[0]
-                .negativeMarks;
-          }
-
-          /*
-           * Mixed marking scheme.
-           *
-           * Example:
-           * CS + English section.
-           *
-           * The instruction UI needs a simple
-           * representative value.
-           *
-           * Actual scoring remains question-level.
-           */
-
-          else if (
-            distinctMarks.length >
-            1
-          ) {
-            positiveMarks =
-              Math.max(
-                ...distinctMarks.map(
-                  (item) =>
-                    item.positiveMarks
-                )
-              );
-
-            negativeMarks =
-              Math.max(
-                ...distinctMarks.map(
-                  (item) =>
-                    item.negativeMarks
-                )
-              );
-          }
-
-          return {
-            id:
-              sectionId,
-
-            test_id:
-              Number(
-                section.test_id
-              ),
-
-            section_name:
-              section.section_name,
-
-            section_order:
-              Number(
-                section.section_order
-              ),
-
-            duration_minutes:
-              section.duration_minutes ===
-              null
-                ? null
-                : toNumber(
-                    section.duration_minutes,
-                    0
-                  ),
-
-            question_count:
-              Number(
-                section.question_count ||
-                  0
-              ),
-
-            is_sequential:
-              Number(
-                section.is_sequential ||
-                  0
-              ) === 1,
-
-            timer_group:
-              section.timer_group ??
-              null,
-
-            positive_marks:
-              formatMarkValue(
-                positiveMarks
-              ),
-
-            negative_marks:
-              formatMarkValue(
-                negativeMarks
-              ),
-
-            marking_schemes:
-              distinctMarks,
-          };
-        }
-      );
-
-    /*
-    |----------------------------------------------------------------------
-    | DURATION
-    |----------------------------------------------------------------------
-    */
-
-    const sectionDurations =
-      sections
-        .map(
-          (section) =>
-            Number(
-              section.duration_minutes
-            )
-        )
-        .filter(
-          (minutes) =>
-            Number.isFinite(
-              minutes
-            ) &&
-            minutes > 0
-        );
-
-    /*
-     * DPP:
-     * stopwatch, no fixed duration.
-     *
-     * Sectional:
-     * sum section durations.
-     *
-     * Normal:
-     * test duration.
-     */
-
-    const sectional =
-      !isDpp &&
-      sectionDurations.length >
-        0;
-
-    const totalSectionDuration =
-      sectionDurations.reduce(
-        (sum, value) =>
-          sum + value,
-        0
-      );
-
-    const totalDuration =
-      isDpp
-        ? 0
-        : sectional
-        ? totalSectionDuration
-        : toNumber(
-            test.duration_minutes,
-            0
-          );
-
-    /*
-    |----------------------------------------------------------------------
-    | ATTEMPTS
-    |----------------------------------------------------------------------
-    */
-
-    const attemptsResult =
-      await db.execute({
-        sql: `
-          SELECT
-            id,
-            attempt_number,
-            status,
-            started_at,
-            submitted_at,
-            deadline_at
-          FROM ${config.attemptTable}
-          WHERE
-            user_id = ?
-            AND test_id = ?
-          ORDER BY
-            id DESC
-        `,
-        args: [
-          userId,
-          testId,
-        ],
-      });
-
-    const attempts =
-      Array.isArray(
-        attemptsResult.rows
-      )
-        ? attemptsResult.rows
-        : [];
-
-    /*
-    |----------------------------------------------------------------------
-    | ACTIVE ATTEMPT
-    |----------------------------------------------------------------------
-    */
-
-    const nowMs =
-      Date.now();
-
-    let active =
-      attempts.find(
-        (item) =>
-          String(
-            item.status
-          ) ===
-          "in_progress"
-      ) || null;
-
-    /*
-    |----------------------------------------------------------------------
-    | EXPIRE STALE ATTEMPT
-    |----------------------------------------------------------------------
-    |
-    | IMPORTANT:
-    |
-    | Do NOT use updated_at here.
-    |
-    | Your attempt tables don't require an updated_at column.
-    |
-    */
-
-    if (
-      active?.deadline_at
-    ) {
-      const deadlineMs =
-        parseDatabaseDate(
-          active.deadline_at
+    for (const option of rawOptions) {
+      const questionId =
+        Number(
+          firstDefined(
+            option.question_id,
+            option.questionId
+          )
         );
 
       if (
-        Number.isFinite(
-          deadlineMs
-        ) &&
-        deadlineMs <=
-          nowMs
+        !Number.isInteger(
+          questionId
+        ) ||
+        questionId <= 0
       ) {
-        console.log(
-          `[instructions] Expiring stale attempt ${series}/${testId} attempt=${active.id}`
-        );
-
-        /*
-         * Only use columns which are part of
-         * the existing attempt schema.
-         */
-
-        await db.execute({
-          sql: `
-            UPDATE ${config.attemptTable}
-            SET
-              status = 'auto_submitted',
-              submitted_at = CURRENT_TIMESTAMP
-            WHERE
-              id = ?
-              AND user_id = ?
-              AND test_id = ?
-              AND status = 'in_progress'
-          `,
-          args: [
-            Number(
-              active.id
-            ),
-            userId,
-            testId,
-          ],
-        });
-
-        active = null;
+        continue;
       }
+
+      if (
+        !optionsByQuestion.has(
+          questionId
+        )
+      ) {
+        optionsByQuestion.set(
+          questionId,
+          []
+        );
+      }
+
+      optionsByQuestion
+        .get(questionId)
+        .push({
+          id: Number(option.id),
+
+          label:
+            firstDefined(
+              option.option_label,
+              option.optionLabel,
+              ""
+            ),
+
+          text:
+            firstDefined(
+              option.option_text,
+              option.optionText,
+              option.text,
+              ""
+            ),
+
+          optionOrder:
+            Number(
+              firstDefined(
+                option.option_order,
+                option.optionOrder,
+                0
+              )
+            ),
+        });
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | COMPLETED ATTEMPTS
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       RESPONSE QUESTIONS
+    ------------------------------------------------------- */
 
-    const completedStatuses =
-      new Set([
-        "submitted",
-        "auto_submitted",
-        "expired",
-      ]);
+    const questions =
+      rawQuestions.map(
+        (question, index) => ({
+          id:
+            Number(question.id),
 
-    const submittedCount =
-      attempts.filter(
-        (item) =>
-          completedStatuses.has(
+          testId:
+            Number(
+              firstDefined(
+                question.test_id,
+                question.testId,
+                testId
+              )
+            ),
+
+          sectionId:
+            firstDefined(
+              question.section_id,
+              question.sectionId
+            ) === null
+              ? null
+              : Number(
+                  firstDefined(
+                    question.section_id,
+                    question.sectionId
+                  )
+                ),
+
+          questionText:
+            firstDefined(
+              question.question_text,
+              question.questionText,
+              question.text,
+              ""
+            ),
+
+          explanation:
+            firstDefined(
+              question.explanation,
+              null
+            ),
+
+          questionType:
             String(
-              item.status
+              firstDefined(
+                question.question_type,
+                question.questionType,
+                "mcq"
+              )
             )
-          )
-      ).length;
+              .trim()
+              .toLowerCase(),
 
-    /*
-     * The stale attempt that was just changed
-     * from in_progress -> auto_submitted
-     * belongs to completed attempts too.
-     */
+          marks:
+            Number(
+              firstDefined(
+                question.marks,
+                0
+              )
+            ),
 
-    const staleWasExpired =
-      attempts.some(
-        (item) =>
-          String(
-            item.status
-          ) === "in_progress" &&
-          item.deadline_at &&
-          Number.isFinite(
-            parseDatabaseDate(
-              item.deadline_at
-            )
-          ) &&
-          parseDatabaseDate(
-            item.deadline_at
-          ) <= nowMs
+          negativeMarks:
+            Number(
+              firstDefined(
+                question.negative_marks,
+                question.negativeMarks,
+                0
+              )
+            ),
+
+          questionOrder:
+            Number(
+              firstDefined(
+                question.question_order,
+                question.questionOrder,
+                index + 1
+              )
+            ),
+
+          options:
+            optionsByQuestion.get(
+              Number(question.id)
+            ) || [],
+        })
       );
 
-    const effectiveSubmittedCount =
-      submittedCount +
-      (staleWasExpired
-        ? 1
-        : 0);
+    /* -------------------------------------------------------
+       TEST RESPONSE
+    ------------------------------------------------------- */
 
-    const maxAttempts =
-      3;
+    const testResponse = {
+      id: Number(test.id),
 
-    const remainingAttempts =
-      Math.max(
-        0,
-        maxAttempts -
-          effectiveSubmittedCount
-      );
+      series,
 
-    /*
-    |----------------------------------------------------------------------
-    | ATTEMPT STATE
-    |----------------------------------------------------------------------
-    */
+      seriesId:
+        config.seriesId,
 
-    const state =
-      remainingAttempts <= 0
-        ? "exhausted"
-        : active
-        ? "resume"
-        : "new";
+      seriesName:
+        firstDefined(
+          test.series_name,
+          null
+        ),
 
-    /*
-    |----------------------------------------------------------------------
-    | RESPONSE
-    |----------------------------------------------------------------------
-    */
+      seriesSlug:
+        firstDefined(
+          test.series_slug,
+          series
+        ),
+
+      title:
+        firstDefined(
+          test.title,
+          `Test ${testId}`
+        ),
+
+      slug:
+        firstDefined(
+          test.slug,
+          null
+        ),
+
+      description:
+        firstDefined(
+          test.description,
+          ""
+        ),
+
+      durationMinutes:
+        toNumber(
+          test.duration_minutes,
+          0
+        ),
+
+      totalQuestions:
+        toNumber(
+          test.total_questions,
+          questions.length
+        ),
+
+      totalMarks:
+        toNumber(
+          test.total_marks,
+          0
+        ),
+
+      isPublished:
+        toBoolean(
+          test.is_published
+        ),
+
+      categoryId:
+        test.category_id ===
+          null ||
+        test.category_id ===
+          undefined
+          ? null
+          : Number(
+              test.category_id
+            ),
+
+      categoryName,
+
+      categorySlug,
+
+      isDpp,
+    };
+
+    /* -------------------------------------------------------
+       RESPONSE
+    ------------------------------------------------------- */
 
     return NextResponse.json(
       {
         success: true,
 
-        test: {
-          id:
-            Number(
-              test.id
-            ),
+        test: testResponse,
 
-          title:
-            test.title,
+        questions,
 
-          slug:
-            test.slug,
+        meta: {
+          series,
 
-          description:
-            test.description,
-
-          duration_minutes:
-            toNumber(
-              test.duration_minutes,
-              0
-            ),
-
-          total_duration_minutes:
-            totalDuration,
-
-          total_questions:
-            Number(
-              test.total_questions ||
-                0
-            ),
-
-          total_marks:
-            toNumber(
-              test.total_marks,
-              0
-            ),
-
-          category_id:
-            Number(
-              test.category_id
-            ),
-
-          category_name:
-            test.category_name ||
-            null,
-
-          category_slug:
-            categorySlug,
-
-          series_id:
+          seriesId:
             config.seriesId,
 
-          series_name:
-            test.series_name ||
-            series,
+          testId,
 
-          series_slug:
-            test.series_slug ||
-            series,
+          questionCount:
+            questions.length,
 
-          is_dpp:
-            isDpp,
+          optionCount:
+            rawOptions.length,
 
-          sectional,
+          categorySlug,
 
-          is_published:
-            Number(
-              test.is_published
-            ) === 1,
+          categoryName,
 
-          sections,
-        },
-
-        attempt: {
-          state,
-
-          active: active
-            ? {
-                id:
-                  Number(
-                    active.id
-                  ),
-
-                attemptNumber:
-                  Number(
-                    active.attempt_number
-                  ),
-
-                attempt_number:
-                  Number(
-                    active.attempt_number
-                  ),
-
-                status:
-                  active.status,
-
-                startedAt:
-                  active.started_at,
-
-                started_at:
-                  active.started_at,
-
-                deadlineAt:
-                  active.deadline_at ||
-                  null,
-
-                deadline_at:
-                  active.deadline_at ||
-                  null,
-              }
-            : null,
-
-          submittedCount:
-            effectiveSubmittedCount,
-
-          maxAttempts,
-
-          remainingAttempts,
+          isDpp,
         },
       },
       {
@@ -1105,17 +748,22 @@ export async function GET(
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
+          Pragma:
+            "no-cache",
+          Expires: "0",
         },
       }
     );
   } catch (error) {
     console.error(
-      "Instructions API error:",
+      "[instructions GET] ERROR:",
       error
     );
 
     return NextResponse.json(
       {
+        success: false,
+
         error:
           error?.message ||
           "Unable to load test instructions.",

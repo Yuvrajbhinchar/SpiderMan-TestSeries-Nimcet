@@ -71,11 +71,17 @@ function normalizeId(value) {
 function toNumber(value, fallback = 0) {
   const n = Number(value);
 
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n)
+    ? n
+    : fallback;
 }
 
 function toBoolean(value) {
-  return value === true || value === 1 || value === "1";
+  return (
+    value === true ||
+    value === 1 ||
+    value === "1"
+  );
 }
 
 function toIsoUtc(value) {
@@ -109,7 +115,10 @@ function toIsoUtc(value) {
 
 function firstDefined(...values) {
   for (const value of values) {
-    if (value !== undefined && value !== null) {
+    if (
+      value !== undefined &&
+      value !== null
+    ) {
       return value;
     }
   }
@@ -117,7 +126,11 @@ function firstDefined(...values) {
   return null;
 }
 
-function jsonError(message, status = 400, code = null) {
+function jsonError(
+  message,
+  status = 400,
+  code = null
+) {
   return NextResponse.json(
     {
       error: message,
@@ -132,7 +145,8 @@ function jsonError(message, status = 400, code = null) {
 ========================================================= */
 
 async function getAuthenticatedUser() {
-  const currentUser = await getCurrentUser();
+  const currentUser =
+    await getCurrentUser();
 
   if (!currentUser?.id) {
     return {
@@ -145,9 +159,13 @@ async function getAuthenticatedUser() {
     };
   }
 
-  const userId = Number(currentUser.id);
+  const userId =
+    Number(currentUser.id);
 
-  if (!Number.isInteger(userId) || userId <= 0) {
+  if (
+    !Number.isInteger(userId) ||
+    userId <= 0
+  ) {
     return {
       ok: false,
       response: jsonError(
@@ -158,23 +176,25 @@ async function getAuthenticatedUser() {
     };
   }
 
-  const userResult = await db.execute({
-    sql: `
-      SELECT
-        id,
-        username,
-        role,
-        is_active,
-        active_session_id,
-        active_device_id
-      FROM users
-      WHERE id = ?
-      LIMIT 1
-    `,
-    args: [userId],
-  });
+  const userResult =
+    await db.execute({
+      sql: `
+        SELECT
+          id,
+          username,
+          role,
+          is_active,
+          active_session_id,
+          active_device_id
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      args: [userId],
+    });
 
-  const user = userResult.rows?.[0];
+  const user =
+    userResult.rows?.[0];
 
   if (!user) {
     return {
@@ -187,7 +207,9 @@ async function getAuthenticatedUser() {
     };
   }
 
-  if (Number(user.is_active) !== 1) {
+  if (
+    Number(user.is_active) !== 1
+  ) {
     return {
       ok: false,
       response: jsonError(
@@ -198,17 +220,19 @@ async function getAuthenticatedUser() {
     };
   }
 
-  const jwtSessionId = firstDefined(
-    currentUser.sessionId,
-    currentUser.session_id,
-    null
-  );
+  const jwtSessionId =
+    firstDefined(
+      currentUser.sessionId,
+      currentUser.session_id,
+      null
+    );
 
-  const jwtDeviceId = firstDefined(
-    currentUser.deviceId,
-    currentUser.device_id,
-    null
-  );
+  const jwtDeviceId =
+    firstDefined(
+      currentUser.deviceId,
+      currentUser.device_id,
+      null
+    );
 
   /*
    * SESSION VALIDATION
@@ -216,14 +240,12 @@ async function getAuthenticatedUser() {
    * JWT must contain a session ID.
    * DB must contain the currently active session ID.
    * Both must match exactly.
-   *
-   * This also correctly rejects an old JWT when
-   * active_session_id has been cleared/revoked in DB.
    */
   if (
     !jwtSessionId ||
     !user.active_session_id ||
-    String(jwtSessionId) !== String(user.active_session_id)
+    String(jwtSessionId) !==
+      String(user.active_session_id)
   ) {
     return {
       ok: false,
@@ -245,7 +267,8 @@ async function getAuthenticatedUser() {
   if (
     !jwtDeviceId ||
     !user.active_device_id ||
-    String(jwtDeviceId) !== String(user.active_device_id)
+    String(jwtDeviceId) !==
+      String(user.active_device_id)
   ) {
     return {
       ok: false,
@@ -269,20 +292,28 @@ async function getAuthenticatedUser() {
    TEST ACCESS
 ========================================================= */
 
-async function getTestContext(series, testId, userId) {
-  const config = SERIES_CONFIG[series];
+async function getTestContext(
+  series,
+  testId,
+  userId,
+  currentUser
+) {
+  const config =
+    SERIES_CONFIG[series];
 
-  const testResult = await db.execute({
-    sql: `
-      SELECT *
-      FROM ${config.testTable}
-      WHERE id = ?
-      LIMIT 1
-    `,
-    args: [testId],
-  });
+  const testResult =
+    await db.execute({
+      sql: `
+        SELECT *
+        FROM ${config.testTable}
+        WHERE id = ?
+        LIMIT 1
+      `,
+      args: [testId],
+    });
 
-  const testRow = testResult.rows?.[0];
+  const testRow =
+    testResult.rows?.[0];
 
   if (!testRow) {
     return {
@@ -297,46 +328,17 @@ async function getTestContext(series, testId, userId) {
 
   /* -------------------------------------------------------
      SERIES ACCESS
+
+     Free series are always accessible.
+     Paid-series entitlement is checked from the verified JWT.
+
+     IMPORTANT:
+     Do NOT query user_series_access here.
   ------------------------------------------------------- */
 
-  let hasAccess = false;
-
-  if (config.seriesId === 1) {
-    hasAccess = true;
-  } else {
-    const accessResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          series_id,
-          is_active,
-          expires_at
-        FROM user_series_access
-        WHERE
-          user_id = ?
-          AND series_id = ?
-          AND is_active = 1
-        LIMIT 1
-      `,
-      args: [userId, config.seriesId],
-    });
-
-    const access = accessResult.rows?.[0];
-
-    if (access) {
-      if (!access.expires_at) {
-        hasAccess = true;
-      } else {
-        const expiry = new Date(
-          toIsoUtc(access.expires_at) || access.expires_at
-        );
-
-        hasAccess =
-          !Number.isNaN(expiry.getTime()) &&
-          expiry.getTime() > Date.now();
-      }
-    }
-  }
+  const hasAccess =
+    config.seriesId === 1 ||
+    currentUser?.seriesAccess?.[series] === true;
 
   if (!hasAccess) {
     return {
@@ -355,31 +357,35 @@ async function getTestContext(series, testId, userId) {
 
   let category = null;
 
-  const categoryId = normalizeId(
-    firstDefined(
-      testRow.category_id,
-      testRow.categoryId
-    )
-  );
+  const categoryId =
+    normalizeId(
+      firstDefined(
+        testRow.category_id,
+        testRow.categoryId
+      )
+    );
 
   if (categoryId) {
     try {
-      const categoryResult = await db.execute({
-        sql: `
-          SELECT
-            id,
-            name,
-            slug,
-            parent_id,
-            is_active
-          FROM test_categories
-          WHERE id = ?
-          LIMIT 1
-        `,
-        args: [categoryId],
-      });
+      const categoryResult =
+        await db.execute({
+          sql: `
+            SELECT
+              id,
+              name,
+              slug,
+              parent_id,
+              is_active
+            FROM test_categories
+            WHERE id = ?
+            LIMIT 1
+          `,
+          args: [categoryId],
+        });
 
-      category = categoryResult.rows?.[0] || null;
+      category =
+        categoryResult.rows?.[0] ||
+        null;
     } catch (error) {
       console.warn(
         "[attempt] Category lookup failed:",
@@ -401,18 +407,30 @@ async function getTestContext(series, testId, userId) {
    /api/test/[series]/[id]/attempt?attemptId=123
 ========================================================= */
 
-export async function GET(request, { params }) {
+export async function GET(
+  request,
+  { params }
+) {
   try {
-    const { series: rawSeries, id: rawId } = await params;
+    const {
+      series: rawSeries,
+      id: rawId,
+    } = await params;
 
-    const series = normalizeSeries(rawSeries);
-    const testId = normalizeId(rawId);
+    const series =
+      normalizeSeries(rawSeries);
 
-    const { searchParams } = new URL(request.url);
+    const testId =
+      normalizeId(rawId);
 
-    const attemptId = normalizeId(
-      searchParams.get("attemptId")
-    );
+    const {
+      searchParams,
+    } = new URL(request.url);
+
+    const attemptId =
+      normalizeId(
+        searchParams.get("attemptId")
+      );
 
     /* -------------------------------------------------------
        VALIDATION
@@ -446,7 +464,8 @@ export async function GET(request, { params }) {
        AUTH
     ------------------------------------------------------- */
 
-    const auth = await getAuthenticatedUser();
+    const auth =
+      await getAuthenticatedUser();
 
     if (!auth.ok) {
       return auth.response;
@@ -455,13 +474,16 @@ export async function GET(request, { params }) {
     const {
       userId,
       user,
+      currentUser,
     } = auth;
 
-    const testContext = await getTestContext(
-      series,
-      testId,
-      userId
-    );
+    const testContext =
+      await getTestContext(
+        series,
+        testId,
+        userId,
+        currentUser
+      );
 
     if (!testContext.ok) {
       return testContext.response;
@@ -477,24 +499,26 @@ export async function GET(request, { params }) {
        ATTEMPT
     ------------------------------------------------------- */
 
-    const attemptResult = await db.execute({
-      sql: `
-        SELECT *
-        FROM ${config.attemptTable}
-        WHERE
-          id = ?
-          AND user_id = ?
-          AND test_id = ?
-        LIMIT 1
-      `,
-      args: [
-        attemptId,
-        userId,
-        testId,
-      ],
-    });
+    const attemptResult =
+      await db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.attemptTable}
+          WHERE
+            id = ?
+            AND user_id = ?
+            AND test_id = ?
+          LIMIT 1
+        `,
+        args: [
+          attemptId,
+          userId,
+          testId,
+        ],
+      });
 
-    const attemptRow = attemptResult.rows?.[0];
+    const attemptRow =
+      attemptResult.rows?.[0];
 
     if (!attemptRow) {
       return jsonError(
@@ -520,15 +544,18 @@ export async function GET(request, { params }) {
        ATTEMPT STATUS
     ------------------------------------------------------- */
 
-    const status = String(
-      firstDefined(
-        attemptRow.status,
-        "in_progress"
-      )
-    ).toLowerCase();
+    const status =
+      String(
+        firstDefined(
+          attemptRow.status,
+          "in_progress"
+        )
+      ).toLowerCase();
 
     const normalizedAttempt = {
-      id: Number(attemptRow.id),
+      id: Number(
+        attemptRow.id
+      ),
 
       userId: Number(
         firstDefined(
@@ -646,110 +673,122 @@ export async function GET(request, { params }) {
        SECTIONS
     ------------------------------------------------------- */
 
-    const sectionResult = await db.execute({
-      sql: `
-        SELECT *
-        FROM ${config.sectionTable}
-        WHERE test_id = ?
-        ORDER BY
-          section_order ASC,
-          id ASC
-      `,
-      args: [testId],
-    });
+    const sectionResult =
+      await db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.sectionTable}
+          WHERE test_id = ?
+          ORDER BY
+            section_order ASC,
+            id ASC
+        `,
+        args: [testId],
+      });
 
-    const rawSections = Array.isArray(
-      sectionResult.rows
-    )
-      ? sectionResult.rows
-      : [];
+    const rawSections =
+      Array.isArray(
+        sectionResult.rows
+      )
+        ? sectionResult.rows
+        : [];
 
-    const sections = rawSections.map(
-      (section, index) => ({
-        id: Number(section.id),
+    const sections =
+      rawSections.map(
+        (section, index) => ({
+          id: Number(section.id),
 
-        testId: Number(
-          firstDefined(
-            section.test_id,
-            section.testId,
-            testId
-          )
-        ),
+          testId: Number(
+            firstDefined(
+              section.test_id,
+              section.testId,
+              testId
+            )
+          ),
 
-        sectionName: firstDefined(
-          section.section_name,
-          section.sectionName,
-          `Section ${index + 1}`
-        ),
+          sectionName:
+            firstDefined(
+              section.section_name,
+              section.sectionName,
+              `Section ${index + 1}`
+            ),
 
-        sectionOrder: Number(
-          firstDefined(
-            section.section_order,
-            section.sectionOrder,
-            index + 1
-          )
-        ),
+          sectionOrder:
+            Number(
+              firstDefined(
+                section.section_order,
+                section.sectionOrder,
+                index + 1
+              )
+            ),
 
-        durationMinutes:
-          firstDefined(
-            section.duration_minutes,
-            section.durationMinutes
-          ) === null
-            ? null
-            : Number(
-                firstDefined(
-                  section.duration_minutes,
-                  section.durationMinutes
-                )
-              ),
+          durationMinutes:
+            firstDefined(
+              section.duration_minutes,
+              section.durationMinutes
+            ) === null
+              ? null
+              : Number(
+                  firstDefined(
+                    section.duration_minutes,
+                    section.durationMinutes
+                  )
+                ),
 
-        questionCount: Number(
-          firstDefined(
-            section.question_count,
-            section.questionCount,
-            0
-          )
-        ),
+          questionCount:
+            Number(
+              firstDefined(
+                section.question_count,
+                section.questionCount,
+                0
+              )
+            ),
 
-        isSequential: toBoolean(
-          firstDefined(
-            section.is_sequential,
-            section.isSequential,
-            0
-          )
-        ),
+          isSequential:
+            toBoolean(
+              firstDefined(
+                section.is_sequential,
+                section.isSequential,
+                0
+              )
+            ),
 
-        timerGroup: firstDefined(
-          section.timer_group,
-          section.timerGroup,
-          null
-        ),
-      })
-    );
+          timerGroup:
+            firstDefined(
+              section.timer_group,
+              section.timerGroup,
+              null
+            ),
+        })
+      );
 
     /* -------------------------------------------------------
        QUESTIONS
     ------------------------------------------------------- */
 
-    const questionResult = await db.execute({
-      sql: `
-        SELECT *
-        FROM ${config.questionTable}
-        WHERE test_id = ?
-        ORDER BY
-          question_order ASC,
-          id ASC
-      `,
-      args: [testId],
-    });
+    const questionResult =
+      await db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.questionTable}
+          WHERE test_id = ?
+          ORDER BY
+            question_order ASC,
+            id ASC
+        `,
+        args: [testId],
+      });
 
-    const rawQuestions = Array.isArray(
-      questionResult.rows
-    )
-      ? questionResult.rows
-      : [];
+    const rawQuestions =
+      Array.isArray(
+        questionResult.rows
+      )
+        ? questionResult.rows
+        : [];
 
-    if (rawQuestions.length === 0) {
+    if (
+      rawQuestions.length === 0
+    ) {
       console.error(
         `[attempt GET] No questions for ${series}/${testId}`
       );
@@ -761,13 +800,19 @@ export async function GET(request, { params }) {
       );
     }
 
-    const questionIds = rawQuestions
-      .map((question) => Number(question.id))
-      .filter(
-        (questionId) =>
-          Number.isInteger(questionId) &&
-          questionId > 0
-      );
+    const questionIds =
+      rawQuestions
+        .map(
+          (question) =>
+            Number(question.id)
+        )
+        .filter(
+          (questionId) =>
+            Number.isInteger(
+              questionId
+            ) &&
+            questionId > 0
+        );
 
     /* -------------------------------------------------------
        OPTIONS
@@ -776,28 +821,31 @@ export async function GET(request, { params }) {
     let rawOptions = [];
 
     if (questionIds.length > 0) {
-      const placeholders = questionIds
-        .map(() => "?")
-        .join(",");
+      const placeholders =
+        questionIds
+          .map(() => "?")
+          .join(",");
 
-      const optionsResult = await db.execute({
-        sql: `
-          SELECT *
-          FROM ${config.optionTable}
-          WHERE question_id IN (${placeholders})
-          ORDER BY
-            question_id ASC,
-            option_order ASC,
-            id ASC
-        `,
-        args: questionIds,
-      });
+      const optionsResult =
+        await db.execute({
+          sql: `
+            SELECT *
+            FROM ${config.optionTable}
+            WHERE question_id IN (${placeholders})
+            ORDER BY
+              question_id ASC,
+              option_order ASC,
+              id ASC
+          `,
+          args: questionIds,
+        });
 
-      rawOptions = Array.isArray(
-        optionsResult.rows
-      )
-        ? optionsResult.rows
-        : [];
+      rawOptions =
+        Array.isArray(
+          optionsResult.rows
+        )
+          ? optionsResult.rows
+          : [];
     }
 
     /* -------------------------------------------------------
@@ -813,25 +861,31 @@ export async function GET(request, { params }) {
        is_correct is NEVER sent to client.
     ------------------------------------------------------- */
 
-    const optionsByQuestion = new Map();
+    const optionsByQuestion =
+      new Map();
 
     for (const option of rawOptions) {
-      const questionId = Number(
-        firstDefined(
-          option.question_id,
-          option.questionId
-        )
-      );
+      const questionId =
+        Number(
+          firstDefined(
+            option.question_id,
+            option.questionId
+          )
+        );
 
       if (
-        !Number.isInteger(questionId) ||
+        !Number.isInteger(
+          questionId
+        ) ||
         questionId <= 0
       ) {
         continue;
       }
 
       if (
-        !optionsByQuestion.has(questionId)
+        !optionsByQuestion.has(
+          questionId
+        )
       ) {
         optionsByQuestion.set(
           questionId,
@@ -839,41 +893,46 @@ export async function GET(request, { params }) {
         );
       }
 
-      const label = firstDefined(
-        option.option_label,
-        option.optionLabel,
-        ""
-      );
+      const label =
+        firstDefined(
+          option.option_label,
+          option.optionLabel,
+          ""
+        );
 
-      const text = firstDefined(
-        option.option_text,
-        option.optionText,
-        option.text,
-        ""
-      );
+      const text =
+        firstDefined(
+          option.option_text,
+          option.optionText,
+          option.text,
+          ""
+        );
 
       optionsByQuestion
         .get(questionId)
         .push({
-          id: Number(option.id),
+          id: Number(
+            option.id
+          ),
 
-          /* REQUIRED BY CURRENT UI */
           label,
 
           text,
 
-          /* Keep normalized names too */
-          optionLabel: label,
+          optionLabel:
+            label,
 
-          optionText: text,
+          optionText:
+            text,
 
-          optionOrder: Number(
-            firstDefined(
-              option.option_order,
-              option.optionOrder,
-              0
-            )
-          ),
+          optionOrder:
+            Number(
+              firstDefined(
+                option.option_order,
+                option.optionOrder,
+                0
+              )
+            ),
         });
     }
 
@@ -881,34 +940,40 @@ export async function GET(request, { params }) {
        SAVED ANSWERS
     ------------------------------------------------------- */
 
-    const answerResult = await db.execute({
-      sql: `
-        SELECT *
-        FROM ${config.answerTable}
-        WHERE attempt_id = ?
-        ORDER BY question_id ASC
-      `,
-      args: [attemptId],
-    });
+    const answerResult =
+      await db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.answerTable}
+          WHERE attempt_id = ?
+          ORDER BY question_id ASC
+        `,
+        args: [attemptId],
+      });
 
-    const rawAnswers = Array.isArray(
-      answerResult.rows
-    )
-      ? answerResult.rows
-      : [];
+    const rawAnswers =
+      Array.isArray(
+        answerResult.rows
+      )
+        ? answerResult.rows
+        : [];
 
-    const answersByQuestion = new Map();
+    const answersByQuestion =
+      new Map();
 
     for (const answer of rawAnswers) {
-      const questionId = Number(
-        firstDefined(
-          answer.question_id,
-          answer.questionId
-        )
-      );
+      const questionId =
+        Number(
+          firstDefined(
+            answer.question_id,
+            answer.questionId
+          )
+        );
 
       if (
-        !Number.isInteger(questionId) ||
+        !Number.isInteger(
+          questionId
+        ) ||
         questionId <= 0
       ) {
         continue;
@@ -930,35 +995,39 @@ export async function GET(request, { params }) {
                   )
                 ),
 
-          timeSpentSeconds: Number(
-            firstDefined(
-              answer.time_spent_seconds,
-              answer.timeSpentSeconds,
-              0
-            )
-          ),
+          timeSpentSeconds:
+            Number(
+              firstDefined(
+                answer.time_spent_seconds,
+                answer.timeSpentSeconds,
+                0
+              )
+            ),
 
-          answeredAt: toIsoUtc(
-            firstDefined(
-              answer.answered_at,
-              answer.answeredAt
-            )
-          ),
+          answeredAt:
+            toIsoUtc(
+              firstDefined(
+                answer.answered_at,
+                answer.answeredAt
+              )
+            ),
 
-          visited: toBoolean(
-            firstDefined(
-              answer.visited,
-              0
-            )
-          ),
+          visited:
+            toBoolean(
+              firstDefined(
+                answer.visited,
+                0
+              )
+            ),
 
-          markedForReview: toBoolean(
-            firstDefined(
-              answer.marked_for_review,
-              answer.markedForReview,
-              0
-            )
-          ),
+          markedForReview:
+            toBoolean(
+              firstDefined(
+                answer.marked_for_review,
+                answer.markedForReview,
+                0
+              )
+            ),
         }
       );
     }
@@ -967,9 +1036,12 @@ export async function GET(request, { params }) {
        SECTION MAP
     ------------------------------------------------------- */
 
-    const sectionMap = new Map();
+    const sectionMap =
+      new Map();
 
-    for (const section of sections) {
+    for (
+      const section of sections
+    ) {
       sectionMap.set(
         Number(section.id),
         section
@@ -980,120 +1052,143 @@ export async function GET(request, { params }) {
        QUESTIONS NORMALIZED
     ------------------------------------------------------- */
 
-    const questions = rawQuestions.map(
-      (question, index) => {
-        const questionId = Number(
-          question.id
-        );
+    const questions =
+      rawQuestions.map(
+        (question, index) => {
+          const questionId =
+            Number(question.id);
 
-        const sectionId =
-          firstDefined(
-            question.section_id,
-            question.sectionId
-          ) === null
-            ? null
-            : Number(
-                firstDefined(
-                  question.section_id,
-                  question.sectionId
-                )
-              );
-
-        const saved =
-          answersByQuestion.get(
-            questionId
-          );
-
-        return {
-          id: questionId,
-
-          testId: Number(
+          const sectionId =
             firstDefined(
-              question.test_id,
-              question.testId,
-              testId
-            )
-          ),
+              question.section_id,
+              question.sectionId
+            ) === null
+              ? null
+              : Number(
+                  firstDefined(
+                    question.section_id,
+                    question.sectionId
+                  )
+                );
 
-          sectionId,
-
-          sectionName:
-            sectionId !== null
-              ? sectionMap.get(
-                  sectionId
-                )?.sectionName || null
-              : null,
-
-          questionText: firstDefined(
-            question.question_text,
-            question.questionText,
-            question.text,
-            ""
-          ),
-
-          explanation: firstDefined(
-            question.explanation,
-            null
-          ),
-
-          questionType: String(
-            firstDefined(
-              question.question_type,
-              question.questionType,
-              "mcq"
-            )
-          ).toLowerCase(),
-
-          marks: Number(
-            firstDefined(
-              question.marks,
-              0
-            )
-          ),
-
-          negativeMarks: Number(
-            firstDefined(
-              question.negative_marks,
-              question.negativeMarks,
-              0
-            )
-          ),
-
-          questionOrder: Number(
-            firstDefined(
-              question.question_order,
-              question.questionOrder,
-              index + 1
-            )
-          ),
-
-          options:
-            optionsByQuestion.get(
+          const saved =
+            answersByQuestion.get(
               questionId
-            ) || [],
+            );
 
-          selectedOptionId:
-            saved?.selectedOptionId ??
-            null,
+          return {
+            id: questionId,
 
-          timeSpentSeconds:
-            saved?.timeSpentSeconds ??
-            0,
+            testId: Number(
+              firstDefined(
+                question.test_id,
+                question.testId,
+                testId
+              )
+            ),
 
-          answeredAt:
-            saved?.answeredAt ??
-            null,
+            sectionId,
 
-          visited:
-            saved?.visited ??
-            false,
+            sectionName:
+              sectionId !== null
+                ? sectionMap.get(
+                    sectionId
+                  )?.sectionName ||
+                  null
+                : null,
 
-          markedForReview:
-            saved?.markedForReview ??
-            false,
-        };
-      }
-    );
+            questionText:
+              firstDefined(
+                question.question_text,
+                question.questionText,
+                question.text,
+                ""
+              ),
+
+            /*
+             * -------------------------------------------------
+             * QUESTION IMAGE
+             *
+             * NULL when no image exists.
+             * Otherwise contains the Cloudinary (or future
+             * image-hosting) URL stored in the database.
+             * -------------------------------------------------
+             */
+            questionImageUrl:
+              firstDefined(
+                question.question_image_url,
+                question.questionImageUrl,
+                null
+              ),
+
+            explanation:
+              firstDefined(
+                question.explanation,
+                null
+              ),
+
+            questionType:
+              String(
+                firstDefined(
+                  question.question_type,
+                  question.questionType,
+                  "mcq"
+                )
+              ).toLowerCase(),
+
+            marks:
+              Number(
+                firstDefined(
+                  question.marks,
+                  0
+                )
+              ),
+
+            negativeMarks:
+              Number(
+                firstDefined(
+                  question.negative_marks,
+                  question.negativeMarks,
+                  0
+                )
+              ),
+
+            questionOrder:
+              Number(
+                firstDefined(
+                  question.question_order,
+                  question.questionOrder,
+                  index + 1
+                )
+              ),
+
+            options:
+              optionsByQuestion.get(
+                questionId
+              ) || [],
+
+            selectedOptionId:
+              saved?.selectedOptionId ??
+              null,
+
+            timeSpentSeconds:
+              saved?.timeSpentSeconds ??
+              0,
+
+            answeredAt:
+              saved?.answeredAt ??
+              null,
+
+            visited:
+              saved?.visited ??
+              false,
+
+            markedForReview:
+              saved?.markedForReview ??
+              false,
+          };
+        }
+      );
 
     /* -------------------------------------------------------
        CATEGORY / TIMER FLAGS
@@ -1122,7 +1217,8 @@ export async function GET(request, { params }) {
       sections.some(
         (section) =>
           Number(
-            section.durationMinutes || 0
+            section.durationMinutes ||
+              0
           ) > 0
       );
 
@@ -1132,7 +1228,8 @@ export async function GET(request, { params }) {
       sections.some(
         (section) =>
           Number(
-            section.durationMinutes || 0
+            section.durationMinutes ||
+              0
           ) > 0 &&
           Boolean(
             section.timerGroup
@@ -1172,21 +1269,24 @@ export async function GET(request, { params }) {
 
       sectional,
 
-      title: firstDefined(
-        testRow.title,
-        testRow.name,
-        `Test ${testId}`
-      ),
+      title:
+        firstDefined(
+          testRow.title,
+          testRow.name,
+          `Test ${testId}`
+        ),
 
-      slug: firstDefined(
-        testRow.slug,
-        null
-      ),
+      slug:
+        firstDefined(
+          testRow.slug,
+          null
+        ),
 
-      description: firstDefined(
-        testRow.description,
-        ""
-      ),
+      description:
+        firstDefined(
+          testRow.description,
+          ""
+        ),
 
       durationMinutes:
         Number(
@@ -1313,7 +1413,10 @@ export async function GET(request, { params }) {
    mode = "resume"
 ========================================================= */
 
-export async function POST(request, { params }) {
+export async function POST(
+  request,
+  { params }
+) {
   try {
     const {
       series: rawSeries,
@@ -1362,6 +1465,7 @@ export async function POST(request, { params }) {
 
     const {
       userId,
+      currentUser,
     } = auth;
 
     /* -------------------------------------------------------
@@ -1404,7 +1508,8 @@ export async function POST(request, { params }) {
       await getTestContext(
         series,
         testId,
-        userId
+        userId,
+        currentUser
       );
 
     if (!testContext.ok) {

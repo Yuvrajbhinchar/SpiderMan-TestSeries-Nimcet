@@ -230,12 +230,6 @@ function isSectionTimed(sections) {
   );
 }
 
-/*
-|--------------------------------------------------------------------------
-| IMPORTANT TIMESTAMP FIX
-|--------------------------------------------------------------------------
-*/
-
 function getTimestamp(value) {
   if (!value) {
     return NaN;
@@ -251,10 +245,6 @@ function getTimestamp(value) {
     return NaN;
   }
 
-  /*
-   * Turso / SQLite style:
-   * 2026-09-10 18:40:00
-   */
   if (
     text.length === 19 &&
     text[4] === "-" &&
@@ -268,13 +258,7 @@ function getTimestamp(value) {
     ).getTime();
   }
 
-  /*
-   * ISO:
-   * 2026-09-10T18:40:00Z
-   */
-  const parsed = new Date(text).getTime();
-
-  return parsed;
+  return new Date(text).getTime();
 }
 
 export default function AttemptPage() {
@@ -293,9 +277,8 @@ export default function AttemptPage() {
   const [attempt, setAttempt] = useState(null);
   const [sections, setSections] = useState([]);
   const [questions, setQuestions] = useState([]);
-  const [questionsState, setQuestionsState] = useState(
-    {}
-  );
+  const [questionsState, setQuestionsState] =
+    useState({});
 
   const [currentQuestionId, setCurrentQuestionId] =
     useState(null);
@@ -332,12 +315,6 @@ export default function AttemptPage() {
   const [checkpointBusy, setCheckpointBusy] =
     useState(false);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Refs
-  |--------------------------------------------------------------------------
-  */
-
   const stateRef = useRef({});
   const attemptRef = useRef(null);
   const snapshotRef = useRef({});
@@ -345,43 +322,41 @@ export default function AttemptPage() {
 
   const saveTimerRef = useRef(null);
 
-  const fullscreenWarningsRef = useRef(0);
+  const fullscreenWarningsRef =
+    useRef(0);
 
-  const violationLockRef = useRef(false);
+  const violationLockRef =
+    useRef(false);
 
-  const tabWasHiddenRef = useRef(false);
+  const tabWasHiddenRef =
+    useRef(false);
 
-  const forceSubmitTimerRef = useRef(null);
+  const forceSubmitTimerRef =
+    useRef(null);
 
-  const submitTestRef = useRef(null);
+  const submitTestRef =
+    useRef(null);
 
-  const enterFullscreenRef = useRef(null);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Keep refs synced
-  |--------------------------------------------------------------------------
-  */
+  const enterFullscreenRef =
+    useRef(null);
 
   useEffect(() => {
-    stateRef.current = questionsState;
+    stateRef.current =
+      questionsState;
   }, [questionsState]);
 
   useEffect(() => {
-    attemptRef.current = attempt;
+    attemptRef.current =
+      attempt;
   }, [attempt]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Derived
-  |--------------------------------------------------------------------------
-  */
 
   const timedSections = useMemo(
     () =>
       sections.filter(
         (section) =>
-          Number(section.durationMinutes || 0) > 0
+          Number(
+            section.durationMinutes || 0
+          ) > 0
       ),
     [sections]
   );
@@ -424,11 +399,12 @@ export default function AttemptPage() {
       return questions;
     }
 
-    const direct = questions.filter(
-      (question) =>
-        Number(question.sectionId) ===
-        Number(activeSection.id)
-    );
+    const direct =
+      questions.filter(
+        (question) =>
+          Number(question.sectionId) ===
+          Number(activeSection.id)
+      );
 
     if (direct.length > 0) {
       return direct;
@@ -455,7 +431,8 @@ export default function AttemptPage() {
     () =>
       new Set(
         sectionQuestions.map(
-          (question) => Number(question.id)
+          (question) =>
+            Number(question.id)
         )
       ),
     [sectionQuestions]
@@ -465,8 +442,10 @@ export default function AttemptPage() {
     () =>
       questions.filter(
         (question) =>
-          questionsState[question.id]
-            ?.selectedOption !== null
+          questionsState[
+            question.id
+          ]?.selectedOption !==
+          null
       ).length,
     [questions, questionsState]
   );
@@ -475,121 +454,136 @@ export default function AttemptPage() {
     () =>
       questions.filter(
         (question) =>
-          questionsState[question.id]
-            ?.markedForReview
+          questionsState[
+            question.id
+          ]?.markedForReview
       ).length,
     [questions, questionsState]
   );
 
-  const answeredReviewCount = useMemo(
-    () =>
-      questions.filter((question) => {
-        const state =
-          questionsState[question.id];
+  const answeredReviewCount =
+    useMemo(
+      () =>
+        questions.filter(
+          (question) => {
+            const state =
+              questionsState[
+                question.id
+              ];
 
-        return (
-          state?.markedForReview &&
-          state?.selectedOption !== null
-        );
-      }).length,
-    [questions, questionsState]
-  );
+            return (
+              state?.markedForReview &&
+              state?.selectedOption !==
+                null
+            );
+          }
+        ).length,
+      [questions, questionsState]
+    );
 
-  const reviewOnlyCount = Math.max(
-    0,
-    markedCount - answeredReviewCount
-  );
+  const reviewOnlyCount =
+    Math.max(
+      0,
+      markedCount -
+        answeredReviewCount
+    );
 
   const visitedCount = useMemo(
     () =>
       questions.filter(
         (question) =>
-          questionsState[question.id]
-            ?.visited
+          questionsState[
+            question.id
+          ]?.visited
       ).length,
     [questions, questionsState]
   );
 
-  const notVisitedCount = Math.max(
-    0,
-    questions.length - visitedCount
-  );
+  const notVisitedCount =
+    Math.max(
+      0,
+      questions.length -
+        visitedCount
+    );
 
-  const notAnsweredCount = Math.max(
-    0,
-    questions.length -
-      answeredCount -
-      notVisitedCount
-  );
+  const notAnsweredCount =
+    Math.max(
+      0,
+      questions.length -
+        answeredCount -
+        notVisitedCount
+    );
 
-  /*
-  |--------------------------------------------------------------------------
-  | Go To Question
-  |--------------------------------------------------------------------------
-  */
+  const goToQuestion =
+    useCallback(
+      (questionId) => {
+        const question =
+          questions.find(
+            (item) =>
+              Number(item.id) ===
+              Number(questionId)
+          );
 
-  const goToQuestion = useCallback(
-    (questionId) => {
-      const question =
-        questions.find(
-          (item) =>
-            Number(item.id) ===
-            Number(questionId)
+        if (!question) {
+          return;
+        }
+
+        if (
+          sectional &&
+          !allowedQuestionIds.has(
+            Number(question.id)
+          )
+        ) {
+          return;
+        }
+
+        setCurrentQuestionId(
+          Number(question.id)
         );
 
-      if (!question) {
-        return;
-      }
+        setQuestionsState(
+          (prev) => ({
+            ...prev,
+            [question.id]: {
+              ...(prev[
+                question.id
+              ] || {
+                selectedOption:
+                  null,
+                markedForReview:
+                  false,
+                timeSpentSeconds:
+                  0,
+                visited:
+                  false,
+              }),
+              visited: true,
+            },
+          })
+        );
 
-      if (
-        sectional &&
-        !allowedQuestionIds.has(
-          Number(question.id)
-        )
-      ) {
-        return;
-      }
-
-      setCurrentQuestionId(
-        Number(question.id)
-      );
-
-      setQuestionsState((prev) => ({
-        ...prev,
-        [question.id]: {
-          ...(prev[question.id] || {
-            selectedOption: null,
-            markedForReview: false,
-            timeSpentSeconds: 0,
-            visited: false,
-          }),
-          visited: true,
-        },
-      }));
-
-      setMobilePalette(false);
-    },
-    [
-      questions,
-      sectional,
-      allowedQuestionIds,
-    ]
-  );
-
-  /*
-  |--------------------------------------------------------------------------
-  | Checkpoint
-  |--------------------------------------------------------------------------
-  */
+        setMobilePalette(false);
+      },
+      [
+        questions,
+        sectional,
+        allowedQuestionIds,
+      ]
+    );
 
   const getChangedAnswers =
     useCallback(() => {
-      const current = stateRef.current;
-      const snapshot = snapshotRef.current;
+      const current =
+        stateRef.current;
+
+      const snapshot =
+        snapshotRef.current;
 
       const changed = [];
 
-      for (const question of questions) {
+      for (
+        const question of questions
+      ) {
         const item =
           current[question.id];
 
@@ -607,32 +601,35 @@ export default function AttemptPage() {
               );
 
         const payload = {
-          questionId: Number(
-            question.id
-          ),
+          questionId:
+            Number(question.id),
 
           selectedOptionId,
 
-          visited: Boolean(
-            item.visited
-          ),
+          visited:
+            Boolean(item.visited),
 
-          markedForReview: Boolean(
-            item.markedForReview
-          ),
+          markedForReview:
+            Boolean(
+              item.markedForReview
+            ),
 
-          timeSpentSeconds: Math.max(
-            0,
-            Math.floor(
-              Number(
-                item.timeSpentSeconds || 0
+          timeSpentSeconds:
+            Math.max(
+              0,
+              Math.floor(
+                Number(
+                  item.timeSpentSeconds ||
+                    0
+                )
               )
-            )
-          ),
+            ),
         };
 
         const previous =
-          snapshot[question.id];
+          snapshot[
+            question.id
+          ];
 
         if (
           !previous ||
@@ -645,7 +642,9 @@ export default function AttemptPage() {
           previous.timeSpentSeconds !==
             payload.timeSpentSeconds
         ) {
-          changed.push(payload);
+          changed.push(
+            payload
+          );
         }
       }
 
@@ -684,7 +683,9 @@ export default function AttemptPage() {
         }
 
         if (!keepalive) {
-          setCheckpointBusy(true);
+          setCheckpointBusy(
+            true
+          );
         }
 
         try {
@@ -697,16 +698,20 @@ export default function AttemptPage() {
               )}/checkpoint`,
               {
                 method: "POST",
+
                 headers: {
                   "Content-Type":
                     "application/json",
                 },
-                credentials: "include",
+
+                credentials:
+                  "include",
 
                 body: JSON.stringify({
                   attemptId: Number(
                     attemptRef.current.id
                   ),
+
                   answers: changed,
                 }),
 
@@ -721,7 +726,9 @@ export default function AttemptPage() {
           const data =
             await response
               .json()
-              .catch(() => ({}));
+              .catch(
+                () => ({})
+              );
 
           if (!response.ok) {
             if (
@@ -740,7 +747,9 @@ export default function AttemptPage() {
             return false;
           }
 
-          for (const item of changed) {
+          for (
+            const item of changed
+          ) {
             snapshotRef.current[
               item.questionId
             ] = item;
@@ -756,7 +765,9 @@ export default function AttemptPage() {
           return false;
         } finally {
           if (!keepalive) {
-            setCheckpointBusy(false);
+            setCheckpointBusy(
+              false
+            );
           }
         }
       },
@@ -769,12 +780,6 @@ export default function AttemptPage() {
         questions.length,
       ]
     );
-
-  /*
-  |--------------------------------------------------------------------------
-  | Submit
-  |--------------------------------------------------------------------------
-  */
 
   const submitTest =
     useCallback(
@@ -810,11 +815,14 @@ export default function AttemptPage() {
               )}/submit`,
               {
                 method: "POST",
+
                 headers: {
                   "Content-Type":
                     "application/json",
                 },
-                credentials: "include",
+
+                credentials:
+                  "include",
 
                 body: JSON.stringify({
                   attemptId: Number(
@@ -827,7 +835,9 @@ export default function AttemptPage() {
           const data =
             await response
               .json()
-              .catch(() => ({}));
+              .catch(
+                () => ({})
+              );
 
           if (
             response.status === 401 ||
@@ -859,7 +869,8 @@ export default function AttemptPage() {
             );
           }
 
-          submittedRef.current = true;
+          submittedRef.current =
+            true;
 
           try {
             sessionStorage.setItem(
@@ -925,12 +936,6 @@ export default function AttemptPage() {
       submitTest;
   }, [submitTest]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Load Attempt
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     if (
       !id ||
@@ -966,7 +971,9 @@ export default function AttemptPage() {
         const data =
           await response
             .json()
-            .catch(() => ({}));
+            .catch(
+              () => ({})
+            );
 
         if (!response.ok) {
           if (
@@ -998,7 +1005,8 @@ export default function AttemptPage() {
           data?.test || null;
 
         const loadedAttempt =
-          data?.attempt || null;
+          data?.attempt ||
+          null;
 
         const loadedSections =
           Array.isArray(
@@ -1026,7 +1034,9 @@ export default function AttemptPage() {
           );
         }
 
-        if (!loadedQuestions.length) {
+        if (
+          !loadedQuestions.length
+        ) {
           throw new Error(
             "No questions were found for this test."
           );
@@ -1103,9 +1113,24 @@ export default function AttemptPage() {
                 question.question_text ??
                 "",
 
+              /*
+               * ------------------------------------------------------
+               * STEP 3:
+               * Question image support.
+               *
+               * NULL/empty means the existing text-only UI remains
+               * exactly the same.
+               * ------------------------------------------------------
+               */
+              questionImageUrl:
+                question.questionImageUrl ??
+                question.question_image_url ??
+                null,
+
               marks:
                 Number(
-                  question.marks ?? 0
+                  question.marks ??
+                    0
                 ),
 
               negativeMarks:
@@ -1153,10 +1178,6 @@ export default function AttemptPage() {
               []
           );
 
-        /*
-         * Restore local backup.
-         */
-
         try {
           const backup =
             localStorage.getItem(
@@ -1165,7 +1186,9 @@ export default function AttemptPage() {
 
           if (backup) {
             const parsed =
-              JSON.parse(backup);
+              JSON.parse(
+                backup
+              );
 
             if (
               parsed?.questionsState &&
@@ -1203,16 +1226,25 @@ export default function AttemptPage() {
         attemptRef.current =
           loadedAttempt;
 
-        snapshotRef.current = {};
+        snapshotRef.current =
+          {};
 
-        setTest(loadedTest);
-        setAttempt(loadedAttempt);
+        setTest(
+          loadedTest
+        );
+
+        setAttempt(
+          loadedAttempt
+        );
+
         setSections(
           normalizedSections
         );
+
         setQuestions(
           normalizedQuestions
         );
+
         setQuestionsState(
           restored
         );
@@ -1264,12 +1296,6 @@ export default function AttemptPage() {
     router,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Local Backup
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     if (
       !attempt?.id ||
@@ -1290,6 +1316,7 @@ export default function AttemptPage() {
             JSON.stringify({
               questionsState:
                 stateRef.current,
+
               savedAt:
                 new Date().toISOString(),
             })
@@ -1307,12 +1334,6 @@ export default function AttemptPage() {
     questions.length,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Server Checkpoint Every 60 Seconds
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     if (
       !attempt?.id ||
@@ -1328,30 +1349,14 @@ export default function AttemptPage() {
       }, 60000);
 
     return () =>
-      window.clearInterval(timer);
+      window.clearInterval(
+        timer
+      );
   }, [
     attempt?.id,
     loading,
     saveCheckpoint,
   ]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | MASTER TIMER
-  |--------------------------------------------------------------------------
-  |
-  | This fixes the timer shown at the top.
-  |
-  | DPP:
-  |   elapsed time
-  |
-  | Fixed:
-  |   remaining countdown
-  |
-  | Sectional:
-  |   active section remaining
-  |
-  */
 
   useEffect(() => {
     if (
@@ -1391,26 +1396,20 @@ export default function AttemptPage() {
           elapsed
         );
 
-        /*
-         * DPP is stopwatch style.
-         */
-
         if (isDpp) {
           return;
         }
-
-        /*
-         * Sectional timer.
-         */
 
         if (
           sectional &&
           timedSections.length
         ) {
-          let cursor = elapsed;
+          let cursor =
+            elapsed;
 
           let activeIndex =
-            timedSections.length - 1;
+            timedSections.length -
+            1;
 
           let remaining = 0;
 
@@ -1422,11 +1421,17 @@ export default function AttemptPage() {
           ) {
             const duration =
               Number(
-                timedSections[index]
-                  .durationMinutes || 0
+                timedSections[
+                  index
+                ]
+                  .durationMinutes ||
+                  0
               ) * 60;
 
-            if (cursor < duration) {
+            if (
+              cursor <
+              duration
+            ) {
               activeIndex =
                 index;
 
@@ -1437,7 +1442,8 @@ export default function AttemptPage() {
               break;
             }
 
-            cursor -= duration;
+            cursor -=
+              duration;
           }
 
           setRemainingSeconds(
@@ -1473,7 +1479,8 @@ export default function AttemptPage() {
             ) {
               setCurrentQuestionId(
                 Number(
-                  nextQuestions[0].id
+                  nextQuestions[0]
+                    .id
                 )
               );
             }
@@ -1483,17 +1490,16 @@ export default function AttemptPage() {
             remaining === 0 &&
             elapsed > 0 &&
             activeIndex ===
-              timedSections.length - 1
+              timedSections.length -
+                1
           ) {
-            submitTestRef.current?.(true);
+            submitTestRef.current?.(
+              true
+            );
           }
 
           return;
         }
-
-        /*
-         * Fixed full-test timer.
-         */
 
         if (fixedTimer) {
           const total =
@@ -1524,7 +1530,9 @@ export default function AttemptPage() {
       }, 1000);
 
     return () =>
-      window.clearInterval(timer);
+      window.clearInterval(
+        timer
+      );
   }, [
     attempt?.id,
     loading,
@@ -1536,12 +1544,6 @@ export default function AttemptPage() {
     fixedTimer,
     test?.durationMinutes,
   ]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Question Time
-  |--------------------------------------------------------------------------
-  */
 
   useEffect(() => {
     if (
@@ -1558,7 +1560,9 @@ export default function AttemptPage() {
           (prev) => {
             if (
               !currentQuestionId ||
-              !prev[currentQuestionId]
+              !prev[
+                currentQuestionId
+              ]
             ) {
               return prev;
             }
@@ -1592,51 +1596,44 @@ export default function AttemptPage() {
       }, 1000);
 
     return () =>
-      window.clearInterval(timer);
+      window.clearInterval(
+        timer
+      );
   }, [
     attempt?.id,
     loading,
     currentQuestionId,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Fullscreen
-  |--------------------------------------------------------------------------
-  */
-
   const enterFullscreen =
-    useCallback(async () => {
-      try {
-        if (
-          !document.fullscreenElement &&
-          document.documentElement
-            .requestFullscreen
-        ) {
-          await document.documentElement.requestFullscreen();
-        }
+    useCallback(
+      async () => {
+        try {
+          if (
+            !document.fullscreenElement &&
+            document.documentElement
+              .requestFullscreen
+          ) {
+            await document.documentElement.requestFullscreen();
+          }
 
-        setShowFullscreenWarning(
-          false
-        );
-      } catch (error) {
-        console.warn(
-          "Fullscreen request failed:",
-          error
-        );
-      }
-    }, []);
+          setShowFullscreenWarning(
+            false
+          );
+        } catch (error) {
+          console.warn(
+            "Fullscreen request failed:",
+            error
+          );
+        }
+      },
+      []
+    );
 
   useEffect(() => {
     enterFullscreenRef.current =
       enterFullscreen;
   }, [enterFullscreen]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Initial Fullscreen Attempt
-  |--------------------------------------------------------------------------
-  */
 
   useEffect(() => {
     if (
@@ -1647,17 +1644,7 @@ export default function AttemptPage() {
       return;
     }
 
-    /*
-     * Browser may reject this because the
-     * page load itself is not always a user gesture.
-     */
-
     enterFullscreen();
-
-    /*
-     * The first genuine user interaction
-     * is also used as a fullscreen opportunity.
-     */
 
     const handleFirstInteraction =
       () => {
@@ -1689,12 +1676,6 @@ export default function AttemptPage() {
     enterFullscreen,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Register Violation
-  |--------------------------------------------------------------------------
-  */
-
   const registerViolation =
     useCallback(
       (reason) => {
@@ -1705,24 +1686,22 @@ export default function AttemptPage() {
           return;
         }
 
-        /*
-         * Prevent fullscreenchange +
-         * visibilitychange from counting the
-         * same action twice.
-         */
-
-        if (violationLockRef.current) {
+        if (
+          violationLockRef.current
+        ) {
           return;
         }
 
-        violationLockRef.current = true;
+        violationLockRef.current =
+          true;
 
         window.setTimeout(() => {
           violationLockRef.current =
             false;
         }, 1200);
 
-        fullscreenWarningsRef.current += 1;
+        fullscreenWarningsRef.current +=
+          1;
 
         const next =
           Math.min(
@@ -1744,16 +1723,13 @@ export default function AttemptPage() {
           );
         }
 
-        if (reason === "fullscreen") {
+        if (
+          reason === "fullscreen"
+        ) {
           toast.warning(
             "Fullscreen exit detected."
           );
         }
-
-        /*
-         * Third violation:
-         * submit automatically.
-         */
 
         if (next >= 3) {
           if (
@@ -1778,12 +1754,6 @@ export default function AttemptPage() {
       },
       []
     );
-
-  /*
-  |--------------------------------------------------------------------------
-  | Fullscreen Change Detection
-  |--------------------------------------------------------------------------
-  */
 
   useEffect(() => {
     if (
@@ -1820,12 +1790,6 @@ export default function AttemptPage() {
     attempt?.id,
     registerViolation,
   ]);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Tab Switch Detection
-  |--------------------------------------------------------------------------
-  */
 
   useEffect(() => {
     if (
@@ -1882,28 +1846,6 @@ export default function AttemptPage() {
     registerViolation,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Browser / Window Blur
-  |--------------------------------------------------------------------------
-  |
-  | We do NOT count normal blur as a violation,
-  | because opening browser UI / clicking outside
-  | can otherwise generate false positives.
-  |
-  */
-
-  /*
-  |--------------------------------------------------------------------------
-  | DevTools / Context Menu Deterrence
-  |--------------------------------------------------------------------------
-  |
-  | Browser security cannot guarantee that DevTools
-  | can never be opened. These shortcuts/context
-  | menu actions are blocked as a deterrent.
-  |
-  */
-
   useEffect(() => {
     if (
       loading ||
@@ -1932,9 +1874,11 @@ export default function AttemptPage() {
           key === "f12" ||
           (ctrlOrMeta &&
             event.shiftKey &&
-            ["i", "j", "c"].includes(
-              key
-            )) ||
+            [
+              "i",
+              "j",
+              "c",
+            ].includes(key)) ||
           (ctrlOrMeta &&
             key === "u");
 
@@ -1991,12 +1935,6 @@ export default function AttemptPage() {
     attempt?.id,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Before Unload
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     if (
       !attempt?.id ||
@@ -2035,12 +1973,6 @@ export default function AttemptPage() {
     saveCheckpoint,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Cleanup
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     return () => {
       if (
@@ -2053,12 +1985,6 @@ export default function AttemptPage() {
     };
   }, []);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Keyboard Question Navigation
-  |--------------------------------------------------------------------------
-  */
-
   useEffect(() => {
     if (loading) {
       return;
@@ -2066,10 +1992,6 @@ export default function AttemptPage() {
 
     const handleKey =
       (event) => {
-        /*
-         * Do not hijack shortcuts.
-         */
-
         if (
           event.ctrlKey ||
           event.metaKey ||
@@ -2124,12 +2046,6 @@ export default function AttemptPage() {
     loading,
   ]);
 
-  /*
-  |--------------------------------------------------------------------------
-  | Option Selection
-  |--------------------------------------------------------------------------
-  */
-
   const selectOption = (
     optionIndex
   ) => {
@@ -2141,30 +2057,25 @@ export default function AttemptPage() {
       (prev) => ({
         ...prev,
 
-        [currentQuestion.id]: {
-          ...(prev[
-            currentQuestion.id
-          ] || {}),
-
-          visited: true,
-
-          selectedOption:
-            prev[
+        [currentQuestion.id]:
+          {
+            ...(prev[
               currentQuestion.id
-            ]?.selectedOption ===
-            optionIndex
-              ? null
-              : optionIndex,
-        },
+            ] || {}),
+
+            visited: true,
+
+            selectedOption:
+              prev[
+                currentQuestion.id
+              ]?.selectedOption ===
+              optionIndex
+                ? null
+                : optionIndex,
+          },
       })
     );
   };
-
-  /*
-  |--------------------------------------------------------------------------
-  | Review
-  |--------------------------------------------------------------------------
-  */
 
   const toggleReview = () => {
     if (!currentQuestion) {
@@ -2175,112 +2086,110 @@ export default function AttemptPage() {
       (prev) => ({
         ...prev,
 
-        [currentQuestion.id]: {
-          ...(prev[
-            currentQuestion.id
-          ] || {}),
-
-          visited: true,
-
-          markedForReview:
-            !prev[
+        [currentQuestion.id]:
+          {
+            ...(prev[
               currentQuestion.id
-            ]?.markedForReview,
-        },
+            ] || {}),
+
+            visited: true,
+
+            markedForReview:
+              !prev[
+                currentQuestion.id
+              ]?.markedForReview,
+          },
       })
     );
   };
 
-  /*
-  |--------------------------------------------------------------------------
-  | Next / Previous
-  |--------------------------------------------------------------------------
-  */
+  const nextQuestion =
+    () => {
+      const index =
+        sectionQuestions.findIndex(
+          (question) =>
+            Number(question.id) ===
+            Number(
+              currentQuestionId
+            )
+        );
 
-  const nextQuestion = () => {
-    const index =
-      sectionQuestions.findIndex(
-        (question) =>
-          Number(question.id) ===
-          Number(currentQuestionId)
+      const next =
+        sectionQuestions[
+          index + 1
+        ];
+
+      if (next) {
+        goToQuestion(
+          next.id
+        );
+      }
+    };
+
+  const previousQuestion =
+    () => {
+      const index =
+        sectionQuestions.findIndex(
+          (question) =>
+            Number(question.id) ===
+            Number(
+              currentQuestionId
+            )
+        );
+
+      const previous =
+        sectionQuestions[
+          index - 1
+        ];
+
+      if (previous) {
+        goToQuestion(
+          previous.id
+        );
+      }
+    };
+
+  const selectSection =
+    (index) => {
+      if (
+        !sectional ||
+        !timedSections[index]
+      ) {
+        return;
+      }
+
+      if (
+        timedSections[index]
+          .isSequential &&
+        index >
+          activeSectionIndex
+      ) {
+        return;
+      }
+
+      setActiveSectionIndex(
+        index
       );
 
-    const next =
-      sectionQuestions[index + 1];
+      const first =
+        questions.find(
+          (question) =>
+            Number(
+              question.sectionId
+            ) ===
+            Number(
+              timedSections[
+                index
+              ].id
+            )
+        );
 
-    if (next) {
-      goToQuestion(next.id);
-    }
-  };
-
-  const previousQuestion = () => {
-    const index =
-      sectionQuestions.findIndex(
-        (question) =>
-          Number(question.id) ===
-          Number(currentQuestionId)
-      );
-
-    const previous =
-      sectionQuestions[index - 1];
-
-    if (previous) {
-      goToQuestion(
-        previous.id
-      );
-    }
-  };
-
-  /*
-  |--------------------------------------------------------------------------
-  | Section Selection
-  |--------------------------------------------------------------------------
-  */
-
-  const selectSection = (
-    index
-  ) => {
-    if (
-      !sectional ||
-      !timedSections[index]
-    ) {
-      return;
-    }
-
-    if (
-      timedSections[index]
-        .isSequential &&
-      index >
-        activeSectionIndex
-    ) {
-      return;
-    }
-
-    setActiveSectionIndex(
-      index
-    );
-
-    const first =
-      questions.find(
-        (question) =>
-          Number(
-            question.sectionId
-          ) ===
-          Number(
-            timedSections[index].id
-          )
-      );
-
-    if (first) {
-      goToQuestion(first.id);
-    }
-  };
-
-  /*
-  |--------------------------------------------------------------------------
-  | Current State
-  |--------------------------------------------------------------------------
-  */
+      if (first) {
+        goToQuestion(
+          first.id
+        );
+      }
+    };
 
   const currentState =
     currentQuestion
@@ -2288,17 +2197,14 @@ export default function AttemptPage() {
           currentQuestion.id
         ] || {
           visited: false,
-          selectedOption: null,
-          markedForReview: false,
-          timeSpentSeconds: 0,
+          selectedOption:
+            null,
+          markedForReview:
+            false,
+          timeSpentSeconds:
+            0,
         }
       : null;
-
-  /*
-  |--------------------------------------------------------------------------
-  | Header Timer
-  |--------------------------------------------------------------------------
-  */
 
   const headerTime = isDpp
     ? elapsedSeconds
@@ -2315,23 +2221,11 @@ export default function AttemptPage() {
         )
     ) + 1;
 
-  /*
-  |--------------------------------------------------------------------------
-  | Loading
-  |--------------------------------------------------------------------------
-  */
-
   if (loading) {
     return (
       <SpiderManLoader text="Loading Test..." />
     );
   }
-
-  /*
-  |--------------------------------------------------------------------------
-  | Error
-  |--------------------------------------------------------------------------
-  */
 
   if (
     loadError ||
@@ -2360,7 +2254,7 @@ export default function AttemptPage() {
             onClick={() =>
               router.push("/")
             }
-            className="mt-6 rounded-xl bg-[#ef1118] px-6 py-3 text-sm font-bold text-white"
+            className="mt-6 cursor-pointer rounded-xl bg-[#ef1118] px-6 py-3 text-sm font-bold text-white"
           >
             Back to Dashboard
           </button>
@@ -2372,17 +2266,9 @@ export default function AttemptPage() {
   const currentStatus =
     getStatus(currentState);
 
-  /*
-  |--------------------------------------------------------------------------
-  | MAIN UI
-  |--------------------------------------------------------------------------
-  */
-
   return (
     <div className="fixed inset-0 z-[100] flex h-screen h-[100dvh] w-screen flex-col overflow-hidden bg-[#f8fafc] font-sans">
-      {/* ================================================================ */}
       {/* HEADER */}
-      {/* ================================================================ */}
 
       <header className="shrink-0 border-b border-slate-200 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
         <div className="flex h-[72px] items-center justify-between px-4 sm:px-5 lg:px-8">
@@ -2403,7 +2289,7 @@ export default function AttemptPage() {
               onClick={() =>
                 setMobilePalette(true)
               }
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 lg:hidden"
+              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 lg:hidden"
             >
               Palette
             </button>
@@ -2458,11 +2344,11 @@ export default function AttemptPage() {
                         index
                       )
                     }
-                    className={`shrink-0 rounded-lg border px-4 py-2.5 text-sm font-extrabold transition ${
+                    className={`shrink-0 cursor-pointer rounded-lg border px-4 py-2.5 text-sm font-extrabold transition disabled:cursor-not-allowed ${
                       active
                         ? "border-[#1d4ed8] bg-[#1d4ed8] text-white shadow-sm"
                         : locked
-                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                        ? "border-slate-200 bg-slate-100 text-slate-400"
                         : "border-slate-300 bg-white text-slate-700 hover:border-[#94a3b8] hover:bg-white"
                     }`}
                   >
@@ -2477,9 +2363,7 @@ export default function AttemptPage() {
         )}
       </header>
 
-      {/* ================================================================ */}
       {/* BODY */}
-      {/* ================================================================ */}
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-hidden">
@@ -2515,7 +2399,7 @@ export default function AttemptPage() {
                     )
                   }
                   aria-label="Report question"
-                  className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-slate-400 transition hover:text-slate-600"
+                  className="ml-auto flex cursor-pointer items-center gap-1.5 text-sm font-semibold text-slate-400 transition hover:text-slate-600"
                 >
                   <Flag className="h-4 w-4" />
 
@@ -2530,11 +2414,37 @@ export default function AttemptPage() {
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 pb-28 lg:px-8 lg:pb-8">
               <div className="mx-auto w-full max-w-[1000px]">
-                <div className="whitespace-pre-wrap text-[20px] leading-8 tracking-[-0.01em] text-slate-800 sm:text-[22px]">
-                  {
-                    currentQuestion.questionText
-                  }
-                </div>
+                {currentQuestion.questionText ? (
+                  <div className="whitespace-pre-wrap text-[20px] leading-8 tracking-[-0.01em] text-slate-800 sm:text-[22px]">
+                    {
+                      currentQuestion.questionText
+                    }
+                  </div>
+                ) : null}
+
+                {/* =====================================================
+                    QUESTION IMAGE
+                    ===================================================== */}
+
+                {currentQuestion.questionImageUrl ? (
+                  <div
+                    className={`${
+                      currentQuestion.questionText
+                        ? "mt-7"
+                        : ""
+                    } overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-[0_1px_3px_rgba(15,23,42,0.06)]`}
+                  >
+                    <img
+                      src={
+                        currentQuestion.questionImageUrl
+                      }
+                      alt={`Question ${currentQuestionNumber}`}
+                      className="mx-auto block h-auto max-h-[65vh] w-auto max-w-full object-contain"
+                      loading="eager"
+                      draggable={false}
+                    />
+                  </div>
+                ) : null}
 
                 <div className="relative left-1/2 mt-7 w-[calc(100%+16px)] -translate-x-1/2 space-y-3 sm:w-[calc(100%+24px)]">
                   {currentQuestion.options.map(
@@ -2598,7 +2508,7 @@ export default function AttemptPage() {
                     onClick={
                       toggleReview
                     }
-                    className={`rounded-xl border px-3 py-2.5 text-xs font-extrabold transition sm:px-4 sm:text-sm ${
+                    className={`cursor-pointer rounded-xl border px-3 py-2.5 text-xs font-extrabold transition sm:px-4 sm:text-sm ${
                       currentState?.markedForReview
                         ? "border-purple-300 bg-purple-50 text-purple-700"
                         : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
@@ -2628,7 +2538,7 @@ export default function AttemptPage() {
                           1
                       ]
                     }
-                    className="rounded-xl border border-slate-200 bg-white p-2.5 text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="cursor-pointer rounded-xl border border-slate-200 bg-white p-2.5 text-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Previous question"
                   >
                     <ChevronLeft className="h-5 w-5" />
@@ -2643,7 +2553,7 @@ export default function AttemptPage() {
                       onClick={
                         nextQuestion
                       }
-                      className="rounded-xl bg-[#2563eb] px-4 py-2.5 text-xs font-extrabold text-white shadow-sm sm:px-5 sm:text-sm"
+                      className="cursor-pointer rounded-xl bg-[#2563eb] px-4 py-2.5 text-xs font-extrabold text-white shadow-sm sm:px-5 sm:text-sm"
                     >
                       Save & Next
                     </button>
@@ -2655,7 +2565,7 @@ export default function AttemptPage() {
                           true
                         )
                       }
-                      className="rounded-xl bg-gradient-to-r from-[#d41445] to-[#e3003f] px-4 py-2.5 text-xs font-extrabold text-white shadow-sm sm:px-5 sm:text-sm"
+                      className="cursor-pointer rounded-xl bg-gradient-to-r from-[#d41445] to-[#e3003f] px-4 py-2.5 text-xs font-extrabold text-white shadow-sm sm:px-5 sm:text-sm"
                     >
                       SUBMIT TEST
                     </button>
@@ -2666,9 +2576,7 @@ export default function AttemptPage() {
           </div>
         </main>
 
-        {/* ============================================================ */}
         {/* DESKTOP PALETTE */}
-        {/* ============================================================ */}
 
         {desktopPalette && (
           <aside className="hidden w-[340px] shrink-0 border-l border-slate-200 bg-[#f8fafc] lg:flex lg:flex-col">
@@ -2684,7 +2592,7 @@ export default function AttemptPage() {
                     false
                   )
                 }
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                className="cursor-pointer rounded-lg p-2 text-slate-500 hover:bg-slate-100"
                 aria-label="Collapse palette"
               >
                 <ChevronRight className="h-5 w-5" />
@@ -2794,7 +2702,7 @@ export default function AttemptPage() {
                             question.id
                           )
                         }
-                        className="flex items-center justify-center"
+                        className="flex cursor-pointer items-center justify-center"
                       >
                         <PaletteIcon
                           status={getStatus(
@@ -2831,7 +2739,7 @@ export default function AttemptPage() {
                     true
                   )
                 }
-                className="w-full rounded-md bg-gradient-to-r from-[#d41445] to-[#e3003f] px-5 py-3.5 text-sm font-extrabold tracking-wide text-white shadow-lg"
+                className="w-full cursor-pointer rounded-md bg-gradient-to-r from-[#d41445] to-[#e3003f] px-5 py-3.5 text-sm font-extrabold tracking-wide text-white shadow-lg"
               >
                 SUBMIT TEST
               </button>
@@ -2847,16 +2755,14 @@ export default function AttemptPage() {
                 true
               )
             }
-            className="absolute right-0 top-[120px] z-20 hidden items-center justify-center rounded-l-xl border border-r-0 border-slate-200 bg-white p-3 text-slate-600 shadow-md lg:flex"
+            className="absolute right-0 top-[120px] z-20 hidden cursor-pointer items-center justify-center rounded-l-xl border border-r-0 border-slate-200 bg-white p-3 text-slate-600 shadow-md lg:flex"
             aria-label="Open palette"
           >
             <ChevronLeft className="h-5 w-5" />
           </button>
         )}
 
-        {/* ============================================================ */}
         {/* MOBILE PALETTE */}
-        {/* ============================================================ */}
 
         {mobilePalette && (
           <>
@@ -2867,7 +2773,7 @@ export default function AttemptPage() {
                   false
                 )
               }
-              className="fixed inset-0 z-[300] bg-slate-900/50 lg:hidden"
+              className="fixed inset-0 z-[300] cursor-pointer bg-slate-900/50 lg:hidden"
               aria-label="Close palette"
             />
 
@@ -2884,7 +2790,7 @@ export default function AttemptPage() {
                       false
                     )
                   }
-                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                  className="cursor-pointer rounded-lg p-2 text-slate-500 hover:bg-slate-100"
                 >
                   <X className="h-5 w-5" />
                 </button>
@@ -2978,7 +2884,7 @@ export default function AttemptPage() {
                               question.id
                             )
                           }
-                          className="flex items-center justify-center"
+                          className="flex cursor-pointer items-center justify-center"
                         >
                           <PaletteIcon
                             status={getStatus(
@@ -3019,7 +2925,7 @@ export default function AttemptPage() {
                       true
                     );
                   }}
-                  className="w-full rounded-md bg-gradient-to-r from-[#d41445] to-[#e3003f] px-5 py-3.5 text-sm font-extrabold tracking-wide text-white"
+                  className="w-full cursor-pointer rounded-md bg-gradient-to-r from-[#d41445] to-[#e3003f] px-5 py-3.5 text-sm font-extrabold tracking-wide text-white"
                 >
                   SUBMIT TEST
                 </button>
@@ -3029,9 +2935,7 @@ export default function AttemptPage() {
         )}
       </div>
 
-      {/* ================================================================ */}
       {/* SUBMIT MODAL */}
-      {/* ================================================================ */}
 
       {showSubmitModal && (
         <div className="fixed inset-0 z-[500] flex items-center justify-center bg-slate-950/65 px-4 backdrop-blur-md">
@@ -3110,7 +3014,7 @@ export default function AttemptPage() {
                   disabled={
                     submitting
                   }
-                  className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-extrabold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  className="cursor-pointer rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-extrabold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Continue Test
                 </button>
@@ -3118,12 +3022,14 @@ export default function AttemptPage() {
                 <button
                   type="button"
                   onClick={() =>
-                    submitTest(false)
+                    submitTest(
+                      false
+                    )
                   }
                   disabled={
                     submitting
                   }
-                  className="rounded-xl bg-[#ef1118] px-5 py-3 text-sm font-extrabold text-white shadow-lg disabled:opacity-50"
+                  className="cursor-pointer rounded-xl bg-[#ef1118] px-5 py-3 text-sm font-extrabold text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {submitting
                     ? "Submitting..."
@@ -3135,9 +3041,7 @@ export default function AttemptPage() {
         </div>
       )}
 
-      {/* ================================================================ */}
       {/* FULLSCREEN / TAB WARNING */}
-      {/* ================================================================ */}
 
       {showFullscreenWarning && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
@@ -3183,7 +3087,7 @@ export default function AttemptPage() {
                       false
                     );
                   }}
-                  className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-extrabold text-slate-700"
+                  className="flex-1 cursor-pointer rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-extrabold text-slate-700"
                 >
                   Submit Test
                 </button>
@@ -3193,7 +3097,7 @@ export default function AttemptPage() {
                   onClick={() =>
                     enterFullscreenRef.current?.()
                   }
-                  className="flex-1 rounded-xl bg-[#ef1118] px-4 py-3 text-sm font-extrabold text-white"
+                  className="flex-1 cursor-pointer rounded-xl bg-[#ef1118] px-4 py-3 text-sm font-extrabold text-white"
                 >
                   Return Fullscreen
                 </button>

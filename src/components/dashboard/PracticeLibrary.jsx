@@ -13,9 +13,23 @@ import {
   Loader2,
 } from "lucide-react";
 
-import { motion, AnimatePresence } from "motion/react";
+import {
+  motion,
+  AnimatePresence,
+} from "motion/react";
+
+import {
+  useDispatch,
+  useSelector,
+} from "react-redux";
 
 import TestGrid from "./TestGrid";
+
+import {
+  CACHE_TTL_MS,
+  setCachedPage,
+  selectCachedPage,
+} from "@/store/testLibrarySlice";
 
 const SUBJECT_NAMES = {
   maths: "Maths",
@@ -37,177 +51,502 @@ export default function PracticeLibrary({
   activeSubject = "maths",
   onStartTest,
 }) {
-  const [tests, setTests] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const dispatch = useDispatch();
+
+  const cachedEntries = useSelector(
+    (state) =>
+      state.testLibrary?.entries || {}
+  );
+
+  const [tests, setTests] =
+    useState([]);
+
+  const [loading, setLoading] =
+    useState(true);
+
   const [loadingMore, setLoadingMore] =
     useState(false);
-  const [error, setError] = useState("");
+
+  const [error, setError] =
+    useState("");
+
   const [nextCursor, setNextCursor] =
     useState(null);
 
-  const observerRef = useRef(null);
-  const requestIdRef = useRef(0);
+  const observerRef =
+    useRef(null);
+
+  const requestIdRef =
+    useRef(0);
+
+  /*
+  |--------------------------------------------------------------------------
+  | Keep the latest Redux cache in a ref.
+  |--------------------------------------------------------------------------
+  |
+  | We do this so fetchTests does NOT need cachedEntries in its dependency
+  | array. That prevents filter-change effects from firing repeatedly
+  | whenever another cache entry is written into Redux.
+  |--------------------------------------------------------------------------
+  */
+
+  const cachedEntriesRef =
+    useRef(cachedEntries);
+
+  useEffect(() => {
+    cachedEntriesRef.current =
+      cachedEntries;
+  }, [cachedEntries]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | Prevent duplicate in-flight requests for the exact same cache key.
+  |--------------------------------------------------------------------------
+  */
+
+  const inFlightRef =
+    useRef(new Map());
 
   const currentSubject =
-    SUBJECT_NAMES[activeSubject] || "Maths";
+    SUBJECT_NAMES[activeSubject] ||
+    "Maths";
 
   const currentMode =
-    MODE_NAMES[activeMode] || "DPP";
+    MODE_NAMES[activeMode] ||
+    "DPP";
 
-  const fetchTests = useCallback(
-    async ({
-      cursor = null,
-      append = false,
-    } = {}) => {
-      const requestId =
-        ++requestIdRef.current;
+  /*
+  |--------------------------------------------------------------------------
+  | CACHE KEY
+  |--------------------------------------------------------------------------
+  */
 
-      try {
+  const getCacheKey =
+    useCallback(
+      ({
+        cursor = null,
+      } = {}) => {
+        const subjectKey =
+          activeMode === "dpp"
+            ? activeSubject || ""
+            : "";
+
+        return [
+          activeSeries || "free",
+          activeMode || "dpp",
+          subjectKey,
+          cursor === null
+            ? "first"
+            : String(cursor),
+        ].join("::");
+      },
+      [
+        activeSeries,
+        activeMode,
+        activeSubject,
+      ]
+    );
+
+  /*
+  |--------------------------------------------------------------------------
+  | REDUX CACHE READ
+  |--------------------------------------------------------------------------
+  */
+
+  const readReduxCache =
+    useCallback(
+      (key) => {
+        return selectCachedPage(
+          {
+            testLibrary: {
+              entries:
+                cachedEntriesRef.current,
+            },
+          },
+          key
+        );
+      },
+      []
+    );
+
+  /*
+  |--------------------------------------------------------------------------
+  | APPLY CACHED PAGE
+  |--------------------------------------------------------------------------
+  */
+
+  const applyCachedPage =
+    useCallback(
+      (
+        cachedPage,
+        { append = false } = {}
+      ) => {
+        if (!cachedPage) {
+          return;
+        }
+
+        const cachedTests =
+          Array.isArray(
+            cachedPage.tests
+          )
+            ? cachedPage.tests
+            : [];
+
         if (append) {
-          setLoadingMore(true);
+          setTests(
+            (previous) => {
+              const existingIds =
+                new Set(
+                  previous.map(
+                    (test) =>
+                      test.id
+                  )
+                );
+
+              const uniqueTests =
+                cachedTests.filter(
+                  (test) =>
+                    !existingIds.has(
+                      test.id
+                    )
+                );
+
+              return [
+                ...previous,
+                ...uniqueTests,
+              ];
+            }
+          );
+        } else {
+          setTests(
+            cachedTests
+          );
+        }
+
+        setNextCursor(
+          cachedPage.nextCursor ??
+            null
+        );
+
+        setLoading(false);
+        setLoadingMore(false);
+      },
+      []
+    );
+
+  /*
+  |--------------------------------------------------------------------------
+  | FETCH TESTS
+  |--------------------------------------------------------------------------
+  */
+
+  const fetchTests =
+    useCallback(
+      async ({
+        cursor = null,
+        append = false,
+      } = {}) => {
+        const requestId =
+          ++requestIdRef.current;
+
+        const cacheKey =
+          getCacheKey({
+            cursor,
+          });
+
+        /*
+        |--------------------------------------------------------------------------
+        | 1. REDUX CACHE HIT
+        |--------------------------------------------------------------------------
+        */
+
+        const cachedPage =
+          readReduxCache(
+            cacheKey
+          );
+
+        if (cachedPage) {
+          if (
+            requestId !==
+            requestIdRef.current
+          ) {
+            return;
+          }
+
+          applyCachedPage(
+            cachedPage,
+            { append }
+          );
+
+          return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 2. DUPLICATE REQUEST CHECK
+        |--------------------------------------------------------------------------
+        */
+
+        const existingRequest =
+          inFlightRef.current.get(
+            cacheKey
+          );
+
+        if (existingRequest) {
+          try {
+            const result =
+              await existingRequest;
+
+            if (
+              requestId !==
+              requestIdRef.current
+            ) {
+              return;
+            }
+
+            if (result) {
+              applyCachedPage(
+                result,
+                { append }
+              );
+            }
+          } catch {
+            /*
+             * The original request handles the error.
+             */
+          }
+
+          return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. REQUEST STATE
+        |--------------------------------------------------------------------------
+        */
+
+        if (append) {
+          setLoadingMore(
+            true
+          );
         } else {
           setLoading(true);
           setError("");
         }
 
-        const params =
-          new URLSearchParams();
+        /*
+        |--------------------------------------------------------------------------
+        | 4. BUILD API REQUEST
+        |--------------------------------------------------------------------------
+        */
 
-        params.set(
-          "series",
-          activeSeries || "free"
-        );
+        const requestPromise =
+          (async () => {
+            const params =
+              new URLSearchParams();
 
-        params.set(
-          "mode",
-          activeMode || "dpp"
-        );
+            params.set(
+              "series",
+              activeSeries ||
+                "free"
+            );
 
-        params.set("limit", "12");
+            params.set(
+              "mode",
+              activeMode ||
+                "dpp"
+            );
+
+            params.set(
+              "limit",
+              "12"
+            );
+
+            /*
+             * Subject filter is only used
+             * for DPP.
+             */
+            if (
+              activeMode ===
+                "dpp" &&
+              activeSubject
+            ) {
+              params.set(
+                "subject",
+                activeSubject
+              );
+            }
+
+            if (
+              cursor !== null
+            ) {
+              params.set(
+                "cursor",
+                String(cursor)
+              );
+            }
+
+            const response =
+              await fetch(
+                `/api/dashboard/tests?${params.toString()}`,
+                {
+                  method: "GET",
+
+                  /*
+                   * The browser HTTP cache must
+                   * not store personalized data.
+                   *
+                   * Redux handles the intentional
+                   * 30-second application cache.
+                   */
+                  cache: "no-store",
+                }
+              );
+
+            const data =
+              await response.json();
+
+            if (!response.ok) {
+              throw new Error(
+                data?.error ||
+                  "Unable to load practice tests."
+              );
+            }
+
+            const newTests =
+              Array.isArray(
+                data?.tests
+              )
+                ? data.tests
+                : [];
+
+            const newNextCursor =
+              data?.nextCursor ??
+              null;
+
+            const page = {
+              tests:
+                newTests,
+
+              nextCursor:
+                newNextCursor,
+            };
+
+            /*
+             * IMPORTANT:
+             * Timestamp is generated outside
+             * the Redux reducer.
+             */
+            dispatch(
+              setCachedPage({
+                key: cacheKey,
+
+                tests:
+                  newTests,
+
+                nextCursor:
+                  newNextCursor,
+
+                timestamp:
+                  Date.now(),
+              })
+            );
+
+            return page;
+          })();
 
         /*
-         * Subject filter is only valid for DPP.
-         */
-        if (
-          activeMode === "dpp" &&
-          activeSubject
-        ) {
-          params.set(
-            "subject",
-            activeSubject
-          );
-        }
+        |--------------------------------------------------------------------------
+        | 5. REGISTER IN-FLIGHT REQUEST
+        |--------------------------------------------------------------------------
+        */
 
-        if (cursor !== null) {
-          params.set(
-            "cursor",
-            String(cursor)
-          );
-        }
-
-        const response = await fetch(
-          `/api/dashboard/tests?${params.toString()}`,
-          {
-            method: "GET",
-            cache: "no-store",
-          }
+        inFlightRef.current.set(
+          cacheKey,
+          requestPromise
         );
 
-        const data =
-          await response.json();
+        try {
+          const page =
+            await requestPromise;
 
-        if (!response.ok) {
-          throw new Error(
-            data?.error ||
+          /*
+           * Do not allow an old filter request
+           * to overwrite a newer filter.
+           */
+          if (
+            requestId !==
+            requestIdRef.current
+          ) {
+            return;
+          }
+
+          applyCachedPage(
+            page,
+            { append }
+          );
+        } catch (
+          fetchError
+        ) {
+          if (
+            requestId !==
+            requestIdRef.current
+          ) {
+            return;
+          }
+
+          console.error(
+            "Practice tests loading error:",
+            fetchError
+          );
+
+          setError(
+            fetchError?.message ||
               "Unable to load practice tests."
           );
+        } finally {
+          /*
+           * Only delete this exact promise if
+           * it is still the registered request.
+           */
+          if (
+            inFlightRef.current.get(
+              cacheKey
+            ) === requestPromise
+          ) {
+            inFlightRef.current.delete(
+              cacheKey
+            );
+          }
+
+          if (
+            requestId ===
+            requestIdRef.current
+          ) {
+            setLoading(false);
+            setLoadingMore(
+              false
+            );
+          }
         }
-
-        /*
-         * Prevent an older request from
-         * overwriting a newer selection.
-         */
-        if (
-          requestId !==
-          requestIdRef.current
-        ) {
-          return;
-        }
-
-        const newTests =
-          Array.isArray(data?.tests)
-            ? data.tests
-            : [];
-
-        if (append) {
-          setTests((previous) => {
-            const existingIds =
-              new Set(
-                previous.map(
-                  (test) => test.id
-                )
-              );
-
-            const uniqueTests =
-              newTests.filter(
-                (test) =>
-                  !existingIds.has(
-                    test.id
-                  )
-              );
-
-            return [
-              ...previous,
-              ...uniqueTests,
-            ];
-          });
-        } else {
-          setTests(newTests);
-        }
-
-        setNextCursor(
-          data?.nextCursor ?? null
-        );
-      } catch (fetchError) {
-        if (
-          requestId !==
-          requestIdRef.current
-        ) {
-          return;
-        }
-
-        console.error(
-          "Practice tests loading error:",
-          fetchError
-        );
-
-        setError(
-          fetchError?.message ||
-            "Unable to load practice tests."
-        );
-      } finally {
-        if (
-          requestId !==
-          requestIdRef.current
-        ) {
-          return;
-        }
-
-        setLoading(false);
-        setLoadingMore(false);
-      }
-    },
-    [
-      activeSeries,
-      activeMode,
-      activeSubject,
-    ]
-  );
+      },
+      [
+        activeSeries,
+        activeMode,
+        activeSubject,
+        applyCachedPage,
+        dispatch,
+        getCacheKey,
+        readReduxCache,
+      ]
+    );
 
   /*
-   * Reset list whenever the selected
-   * series, mode, or subject changes.
-   */
+  |--------------------------------------------------------------------------
+  | RESET WHEN FILTER CHANGES
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     setTests([]);
     setNextCursor(null);
@@ -224,37 +563,51 @@ export default function PracticeLibrary({
     fetchTests,
   ]);
 
-  const hasMore = Boolean(nextCursor);
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD MORE
+  |--------------------------------------------------------------------------
+  */
 
-  const loadMore = useCallback(() => {
-    if (
-      loading ||
-      loadingMore ||
-      !hasMore ||
-      nextCursor === null
-    ) {
-      return;
-    }
+  const hasMore =
+    Boolean(nextCursor);
 
-    fetchTests({
-      cursor: nextCursor,
-      append: true,
-    });
-  }, [
-    fetchTests,
-    hasMore,
-    loading,
-    loadingMore,
-    nextCursor,
-  ]);
+  const loadMore =
+    useCallback(() => {
+      if (
+        loading ||
+        loadingMore ||
+        !hasMore ||
+        nextCursor === null
+      ) {
+        return;
+      }
+
+      fetchTests({
+        cursor:
+          nextCursor,
+        append: true,
+      });
+    }, [
+      fetchTests,
+      hasMore,
+      loading,
+      loadingMore,
+      nextCursor,
+    ]);
 
   /*
-   * Infinite scroll.
-   */
+  |--------------------------------------------------------------------------
+  | INFINITE SCROLL
+  |--------------------------------------------------------------------------
+  */
+
   const setObserverTarget =
     useCallback(
       (node) => {
-        if (observerRef.current) {
+        if (
+          observerRef.current
+        ) {
           observerRef.current.disconnect();
         }
 
@@ -266,25 +619,39 @@ export default function PracticeLibrary({
           new IntersectionObserver(
             (entries) => {
               if (
-                entries[0]?.isIntersecting
+                entries[0]
+                  ?.isIntersecting
               ) {
                 loadMore();
               }
             },
             {
-              rootMargin: "500px",
+              rootMargin:
+                "500px",
             }
           );
 
-        observerRef.current.observe(node);
+        observerRef.current.observe(
+          node
+        );
       },
       [loadMore]
     );
 
+  /*
+  |--------------------------------------------------------------------------
+  | CLEANUP
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     return () => {
       observerRef.current?.disconnect();
-      requestIdRef.current += 1;
+
+      requestIdRef.current +=
+        1;
+
+      inFlightRef.current.clear();
     };
   }, []);
 
@@ -319,7 +686,8 @@ export default function PracticeLibrary({
           {currentMode}
         </span>
 
-        {activeMode === "dpp" ? (
+        {activeMode ===
+        "dpp" ? (
           <>
             <ChevronRight
               size={14}
@@ -333,7 +701,9 @@ export default function PracticeLibrary({
         ) : null}
       </div>
 
-      <AnimatePresence mode="wait">
+      <AnimatePresence
+        mode="wait"
+      >
         <motion.div
           key={`${activeSeries}-${activeMode}-${activeSubject}`}
           initial={{
@@ -355,7 +725,8 @@ export default function PracticeLibrary({
         >
           {/* ERROR */}
 
-          {error && !loading ? (
+          {error &&
+          !loading ? (
             <motion.div
               initial={{
                 opacity: 0,
@@ -393,11 +764,15 @@ export default function PracticeLibrary({
             <>
               <TestGrid
                 tests={tests}
-                onStartTest={onStartTest}
+                onStartTest={
+                  onStartTest
+                }
               />
 
               <div
-                ref={setObserverTarget}
+                ref={
+                  setObserverTarget
+                }
                 className="flex min-h-20 items-center justify-center"
               >
                 {loadingMore ? (
@@ -447,7 +822,8 @@ export default function PracticeLibrary({
 
               <p className="mx-auto mt-1 max-w-sm text-xs leading-5 text-slate-500">
                 There are no{" "}
-                {activeMode === "dpp"
+                {activeMode ===
+                "dpp"
                   ? `${currentSubject} DPP`
                   : currentMode.toLowerCase()}{" "}
                 tests available in this

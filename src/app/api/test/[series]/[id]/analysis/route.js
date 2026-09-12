@@ -229,8 +229,8 @@ async function getAuthenticatedUser() {
     );
 
   if (
-    jwtSessionId &&
-    user.active_session_id &&
+    !jwtSessionId ||
+    !user.active_session_id ||
     String(jwtSessionId) !==
       String(user.active_session_id)
   ) {
@@ -245,8 +245,8 @@ async function getAuthenticatedUser() {
   }
 
   if (
-    jwtDeviceId &&
-    user.active_device_id &&
+    !jwtDeviceId ||
+    !user.active_device_id ||
     String(jwtDeviceId) !==
       String(user.active_device_id)
   ) {
@@ -275,7 +275,8 @@ async function getAuthenticatedUser() {
 async function getTestContext(
   series,
   testId,
-  userId
+  userId,
+  currentUser
 ) {
   const config = SERIES_CONFIG[series];
 
@@ -304,53 +305,15 @@ async function getTestContext(
 
   /*
    * Free series is always accessible.
-   * Paid series require active access.
+   * Paid series access is checked from the verified JWT snapshot.
+   *
+   * IMPORTANT:
+   * We intentionally do NOT query user_series_access here.
+   * Paid entitlement is loaded when the JWT is issued.
    */
-  let hasAccess = false;
-
-  if (config.seriesId === 1) {
-    hasAccess = true;
-  } else {
-    const accessResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          series_id,
-          is_active,
-          expires_at
-        FROM user_series_access
-        WHERE
-          user_id = ?
-          AND series_id = ?
-          AND is_active = 1
-        LIMIT 1
-      `,
-      args: [
-        userId,
-        config.seriesId,
-      ],
-    });
-
-    const access =
-      accessResult.rows?.[0];
-
-    if (access) {
-      if (!access.expires_at) {
-        hasAccess = true;
-      } else {
-        const expiry = new Date(
-          toIsoUtc(access.expires_at) ||
-            access.expires_at
-        );
-
-        hasAccess =
-          !Number.isNaN(
-            expiry.getTime()
-          ) &&
-          expiry.getTime() > Date.now();
-      }
-    }
-  }
+  const hasAccess =
+    config.seriesId === 1 ||
+    currentUser?.seriesAccess?.[series] === true;
 
   if (!hasAccess) {
     return {
@@ -480,7 +443,10 @@ export async function GET(
       return auth.response;
     }
 
-    const { userId } = auth;
+    const {
+      userId,
+      currentUser,
+    } = auth;
 
     /* -------------------------------------------------------
        TEST ACCESS
@@ -490,7 +456,8 @@ export async function GET(
       await getTestContext(
         series,
         testId,
-        userId
+        userId,
+        currentUser
       );
 
     if (!testContext.ok) {
@@ -660,20 +627,8 @@ export async function GET(
         })
       );
 
-    const sectionMap = new Map();
-
-    for (const section of sections) {
-      sectionMap.set(
-        Number(section.id),
-        section
-      );
-    }
-
     /* -------------------------------------------------------
        QUESTIONS
-
-       No section filtering because section_id
-       can be NULL.
     ------------------------------------------------------- */
 
     const questionResult =
@@ -696,21 +651,18 @@ export async function GET(
         ? questionResult.rows
         : [];
 
-    if (rawQuestions.length === 0) {
-      return jsonError(
-        "No questions were found for this test.",
-        422,
-        "NO_QUESTIONS"
-      );
-    }
-
     const questionIds =
       rawQuestions
-        .map((row) => Number(row.id))
+        .map(
+          (question) =>
+            Number(question.id)
+        )
         .filter(
-          (id) =>
-            Number.isInteger(id) &&
-            id > 0
+          (questionId) =>
+            Number.isInteger(
+              questionId
+            ) &&
+            questionId > 0
         );
 
     /* -------------------------------------------------------
@@ -725,12 +677,13 @@ export async function GET(
           .map(() => "?")
           .join(",");
 
-      const optionResult =
+      const optionsResult =
         await db.execute({
           sql: `
             SELECT *
             FROM ${config.optionTable}
-            WHERE question_id IN (${placeholders})
+            WHERE
+              question_id IN (${placeholders})
             ORDER BY
               question_id ASC,
               option_order ASC,
@@ -741,11 +694,127 @@ export async function GET(
 
       rawOptions =
         Array.isArray(
-          optionResult.rows
+          optionsResult.rows
         )
-          ? optionResult.rows
+          ? optionsResult.rows
           : [];
     }
+
+    /* -------------------------------------------------------
+       SAVED ANSWERS
+    ------------------------------------------------------- */
+
+    const answerResult =
+      await db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.answerTable}
+          WHERE attempt_id = ?
+          ORDER BY question_id ASC
+        `,
+        args: [attemptId],
+      });
+
+    const rawAnswers =
+      Array.isArray(
+        answerResult.rows
+      )
+        ? answerResult.rows
+        : [];
+
+    const answersByQuestion =
+      new Map();
+
+    for (const answer of rawAnswers) {
+      const questionId =
+        Number(
+          firstDefined(
+            answer.question_id,
+            answer.questionId
+          )
+        );
+
+      if (
+        !Number.isInteger(
+          questionId
+        ) ||
+        questionId <= 0
+      ) {
+        continue;
+      }
+
+      answersByQuestion.set(
+        questionId,
+        {
+          selectedOptionId:
+            firstDefined(
+              answer.selected_option_id,
+              answer.selectedOptionId
+            ) === null
+              ? null
+              : Number(
+                  firstDefined(
+                    answer.selected_option_id,
+                    answer.selectedOptionId
+                  )
+                ),
+
+          isCorrect:
+            answer.is_correct ===
+              null ||
+            answer.is_correct ===
+              undefined
+              ? null
+              : toBoolean(
+                  answer.is_correct
+                ),
+
+          marksObtained:
+            toNumber(
+              answer.marks_obtained,
+              0
+            ),
+
+          timeSpentSeconds:
+            toNumber(
+              firstDefined(
+                answer.time_spent_seconds,
+                answer.timeSpentSeconds
+              ),
+              0
+            ),
+
+          answeredAt:
+            toIsoUtc(
+              firstDefined(
+                answer.answered_at,
+                answer.answeredAt
+              )
+            ),
+
+          visited:
+            toBoolean(
+              firstDefined(
+                answer.visited,
+                0
+              )
+            ),
+
+          markedForReview:
+            toBoolean(
+              firstDefined(
+                answer.marked_for_review,
+                answer.markedForReview,
+                0
+              )
+            ),
+        }
+      );
+    }
+
+    /* -------------------------------------------------------
+       OPTION MAP
+    ------------------------------------------------------- */
 
     const optionsByQuestion =
       new Map();
@@ -797,338 +866,37 @@ export async function GET(
             ""
           ),
 
-          order: Number(
-            firstDefined(
-              option.option_order,
-              option.optionOrder,
-              0
-            )
-          ),
-
           isCorrect:
+            toBoolean(
+              option.is_correct
+            ),
+
+          optionOrder:
             Number(
               firstDefined(
-                option.is_correct,
-                option.isCorrect,
+                option.option_order,
+                option.optionOrder,
                 0
               )
-            ) === 1,
+            ),
         });
     }
 
     /* -------------------------------------------------------
-       ANSWERS
+       SECTION MAP
     ------------------------------------------------------- */
 
-    const answerResult =
-      await db.execute({
-        sql: `
-          SELECT *
-          FROM ${config.answerTable}
-          WHERE attempt_id = ?
-          ORDER BY
-            question_id ASC
-        `,
-        args: [attemptId],
-      });
+    const sectionMap = new Map();
 
-    const rawAnswers =
-      Array.isArray(
-        answerResult.rows
-      )
-        ? answerResult.rows
-        : [];
-
-    const answersByQuestion =
-      new Map();
-
-    for (const answer of rawAnswers) {
-      const questionId =
-        Number(
-          firstDefined(
-            answer.question_id,
-            answer.questionId
-          )
-        );
-
-      if (
-        !Number.isInteger(
-          questionId
-        ) ||
-        questionId <= 0
-      ) {
-        continue;
-      }
-
-      const selectedValue =
-        firstDefined(
-          answer.selected_option_id,
-          answer.selectedOptionId,
-          null
-        );
-
-      answersByQuestion.set(
-        questionId,
-        {
-          selectedOptionId:
-            selectedValue ===
-              null ||
-            selectedValue ===
-              ""
-              ? null
-              : Number(
-                  selectedValue
-                ),
-
-          isCorrect:
-            answer.is_correct ===
-                null ||
-            answer.is_correct ===
-                undefined
-              ? null
-              : Number(
-                  answer.is_correct
-                ) === 1,
-
-          marksObtained:
-            Number(
-              firstDefined(
-                answer.marks_obtained,
-                answer.marksObtained,
-                0
-              )
-            ),
-
-          timeSpentSeconds:
-            Number(
-              firstDefined(
-                answer.time_spent_seconds,
-                answer.timeSpentSeconds,
-                0
-              )
-            ),
-
-          answeredAt:
-            toIsoUtc(
-              firstDefined(
-                answer.answered_at,
-                answer.answeredAt,
-                null
-              )
-            ),
-
-          visited:
-            toBoolean(
-              firstDefined(
-                answer.visited,
-                0
-              )
-            ),
-
-          markedForReview:
-            toBoolean(
-              firstDefined(
-                answer.marked_for_review,
-                answer.markedForReview,
-                0
-              )
-            ),
-        }
+    for (const section of sections) {
+      sectionMap.set(
+        Number(section.id),
+        section
       );
     }
 
     /* -------------------------------------------------------
-       TEST METADATA
-    ------------------------------------------------------- */
-
-    const categorySlug =
-      String(
-        firstDefined(
-          category?.slug,
-          ""
-        )
-      )
-        .trim()
-        .toLowerCase();
-
-    const categoryName =
-      firstDefined(
-        category?.name,
-        null
-      );
-
-    const normalizedTest = {
-      id: testId,
-
-      title: firstDefined(
-        testRow.title,
-        testRow.name,
-        `Test ${testId}`
-      ),
-
-      slug:
-        firstDefined(
-          testRow.slug,
-          null
-        ),
-
-      description:
-        firstDefined(
-          testRow.description,
-          ""
-        ),
-
-      totalQuestions:
-        Number(
-          firstDefined(
-            testRow.total_questions,
-            testRow.totalQuestions,
-            rawQuestions.length
-          )
-        ),
-
-      totalMarks:
-        Number(
-          firstDefined(
-            testRow.total_marks,
-            testRow.totalMarks,
-            attemptRow.total_marks,
-            0
-          )
-        ),
-
-      durationMinutes:
-        Number(
-          firstDefined(
-            testRow.duration_minutes,
-            testRow.durationMinutes,
-            0
-          )
-        ),
-
-      series,
-
-      seriesId:
-        config.seriesId,
-
-      categoryName,
-
-      categorySlug,
-
-      isDpp:
-        categorySlug === "dpp",
-    };
-
-    /* -------------------------------------------------------
-       ATTEMPT METADATA
-    ------------------------------------------------------- */
-
-    const normalizedAttempt = {
-      id: Number(attemptRow.id),
-
-      userId: Number(
-        firstDefined(
-          attemptRow.user_id,
-          attemptRow.userId,
-          userId
-        )
-      ),
-
-      testId: Number(
-        firstDefined(
-          attemptRow.test_id,
-          attemptRow.testId,
-          testId
-        )
-      ),
-
-      attemptNumber:
-        Number(
-          firstDefined(
-            attemptRow.attempt_number,
-            attemptRow.attemptNumber,
-            1
-          )
-        ),
-
-      status:
-        attemptStatus,
-
-      startedAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.started_at,
-            attemptRow.startedAt
-          )
-        ),
-
-      submittedAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.submitted_at,
-            attemptRow.submittedAt
-          )
-        ),
-
-      score:
-        toNumber(
-          attemptRow.score,
-          0
-        ),
-
-      totalMarks:
-        toNumber(
-          firstDefined(
-            attemptRow.total_marks,
-            attemptRow.totalMarks,
-            testRow.total_marks
-          ),
-          0
-        ),
-
-      correct:
-        toNumber(
-          firstDefined(
-            attemptRow.correct_count,
-            attemptRow.correctCount,
-            0
-          ),
-          0
-        ),
-
-      wrong:
-        toNumber(
-          firstDefined(
-            attemptRow.wrong_count,
-            attemptRow.wrongCount,
-            0
-          ),
-          0
-        ),
-
-      unanswered:
-        toNumber(
-          firstDefined(
-            attemptRow.unanswered_count,
-            attemptRow.unansweredCount,
-            0
-          ),
-          0
-        ),
-
-      timeTakenSeconds:
-        toNumber(
-          firstDefined(
-            attemptRow.time_taken_seconds,
-            attemptRow.timeTakenSeconds,
-            0
-          ),
-          0
-        ),
-    };
-
-    /* -------------------------------------------------------
-       QUESTIONS NORMALIZED
+       QUESTION ANALYSIS
     ------------------------------------------------------- */
 
     const questions =
@@ -1137,99 +905,53 @@ export async function GET(
           const questionId =
             Number(question.id);
 
-          const sectionIdRaw =
+          const sectionId =
             firstDefined(
               question.section_id,
-              question.sectionId,
-              null
-            );
-
-          const sectionId =
-            sectionIdRaw === null
+              question.sectionId
+            ) === null
               ? null
               : Number(
-                  sectionIdRaw
+                  firstDefined(
+                    question.section_id,
+                    question.sectionId
+                  )
                 );
 
-          const answer =
+          const saved =
             answersByQuestion.get(
               questionId
-            ) || null;
+            );
 
           const options =
             optionsByQuestion.get(
               questionId
             ) || [];
 
-          const selectedOptionId =
-            answer?.selectedOptionId ??
-            null;
-
-          const selectedOption =
-            selectedOptionId ===
-              null
-              ? null
-              : options.find(
-                  (option) =>
-                    Number(option.id) ===
-                    Number(
-                      selectedOptionId
-                    )
-                ) || null;
-
-          const correctOptions =
-            options.filter(
+          const correctOption =
+            options.find(
               (option) =>
                 option.isCorrect
-            );
+            ) || null;
 
-          /*
-           * The client gets the answer key here
-           * because this is a completed-attempt
-           * review endpoint.
-           *
-           * isCorrect is kept only on the analysis
-           * endpoint and is NOT present in attempt
-           * bootstrap response.
-           */
-          const correctOption =
-            correctOptions[0] ||
-            null;
-
-          const resultStatus =
-            selectedOptionId === null
-              ? "unanswered"
-              : answer?.isCorrect === true
-                ? "correct"
-                : answer?.isCorrect === false
-                  ? "wrong"
-                  : "unanswered";
-
-          /*
-           * Current question schema does not contain
-           * subject_id in the series tables.
-           *
-           * So use section name when available.
-           * DPP questions therefore naturally show their
-           * section/subject label.
-           */
-          const subjectName =
-            sectionId !== null
-              ? sectionMap.get(
-                  sectionId
-                )?.sectionName || null
-              : categoryName ||
-                series;
+          const selectedOption =
+            saved?.selectedOptionId
+              ? options.find(
+                  (option) =>
+                    option.id ===
+                    saved.selectedOptionId
+                ) || null
+              : null;
 
           return {
             id: questionId,
 
-            number:
+            testId:
               Number(
                 firstDefined(
-                  question.question_order,
-                  question.questionOrder,
-                  index + 1
+                  question.test_id,
+                  question.testId,
+                  testId
                 )
               ),
 
@@ -1239,10 +961,18 @@ export async function GET(
               sectionId !== null
                 ? sectionMap.get(
                     sectionId
-                  )?.sectionName || null
+                  )?.sectionName ||
+                  null
                 : null,
 
-            subjectName,
+            questionOrder:
+              Number(
+                firstDefined(
+                  question.question_order,
+                  question.questionOrder,
+                  index + 1
+                )
+              ),
 
             questionText:
               firstDefined(
@@ -1265,7 +995,9 @@ export async function GET(
                   question.questionType,
                   "mcq"
                 )
-              ).toLowerCase(),
+              )
+                .trim()
+                .toLowerCase(),
 
             marks:
               Number(
@@ -1287,25 +1019,40 @@ export async function GET(
             options: options.map(
               (option) => ({
                 id: option.id,
-                label: option.label,
-                text: option.text,
-                order: option.order,
+
+                label:
+                  option.label,
+
+                text:
+                  option.text,
+
+                optionLabel:
+                  option.label,
+
+                optionText:
+                  option.text,
+
+                optionOrder:
+                  option.optionOrder,
               })
             ),
 
-            selectedOptionId,
+            selectedOptionId:
+              saved
+                ? saved.selectedOptionId
+                : null,
 
             selectedOption:
               selectedOption
                 ? {
                     id:
                       selectedOption.id,
+
                     label:
                       selectedOption.label,
+
                     text:
                       selectedOption.text,
-                    order:
-                      selectedOption.order,
                   }
                 : null,
 
@@ -1314,119 +1061,179 @@ export async function GET(
                 ? {
                     id:
                       correctOption.id,
+
                     label:
                       correctOption.label,
+
                     text:
                       correctOption.text,
-                    order:
-                      correctOption.order,
                   }
                 : null,
 
-            correctOptionIds:
-              correctOptions.map(
-                (option) =>
-                  option.id
-              ),
-
             isCorrect:
-              answer?.isCorrect ??
+              saved?.isCorrect ??
               null,
 
-            resultStatus,
-
             marksObtained:
-              answer?.marksObtained ??
+              saved?.marksObtained ??
               0,
 
             timeSpentSeconds:
-              answer?.timeSpentSeconds ??
+              saved?.timeSpentSeconds ??
               0,
 
             answeredAt:
-              answer?.answeredAt ??
+              saved?.answeredAt ??
               null,
 
             visited:
-              answer?.visited ??
+              saved?.visited ??
               false,
 
             markedForReview:
-              answer?.markedForReview ??
+              saved?.markedForReview ??
               false,
           };
         }
       );
 
     /* -------------------------------------------------------
-       SECTION SUMMARY
+       SCORE SUMMARY
     ------------------------------------------------------- */
 
-    const sectionStats =
-      sections.map((section) => {
-        const sectionQuestions =
-          questions.filter(
-            (question) =>
-              Number(
-                question.sectionId
-              ) ===
-              Number(section.id)
-          );
+    let totalScore = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+    let unansweredCount = 0;
+    let totalTimeSpentSeconds = 0;
 
-        const correct =
-          sectionQuestions.filter(
-            (question) =>
-              question.isCorrect ===
-              true
-          ).length;
+    for (const question of questions) {
+      totalScore += Number(
+        question.marksObtained || 0
+      );
 
-        const wrong =
-          sectionQuestions.filter(
-            (question) =>
-              question.isCorrect ===
-              false
-          ).length;
-
-        const unanswered =
-          sectionQuestions.filter(
-            (question) =>
-              question.selectedOptionId ===
-              null
-          ).length;
-
-        const score =
-          sectionQuestions.reduce(
-            (sum, question) =>
-              sum +
-              Number(
-                question.marksObtained ||
-                  0
-              ),
+      totalTimeSpentSeconds +=
+        Number(
+          question.timeSpentSeconds ||
             0
-          );
+        );
 
-        return {
-          id: section.id,
+      if (
+        question.isCorrect === true
+      ) {
+        correctCount++;
+      } else if (
+        question.isCorrect === false
+      ) {
+        wrongCount++;
+      } else {
+        unansweredCount++;
+      }
+    }
 
-          sectionName:
-            section.sectionName,
+    /* -------------------------------------------------------
+       TEST META
+    ------------------------------------------------------- */
 
-          questionCount:
-            sectionQuestions.length,
+    const categorySlug =
+      String(
+        firstDefined(
+          category?.slug,
+          ""
+        )
+      )
+        .trim()
+        .toLowerCase();
 
-          correct,
+    const categoryName =
+      firstDefined(
+        category?.name,
+        null
+      );
 
-          wrong,
+    const totalQuestions =
+      Number(
+        firstDefined(
+          testRow.total_questions,
+          testRow.totalQuestions,
+          questions.length
+        )
+      );
 
-          unanswered,
+    const totalMarks =
+      Number(
+        firstDefined(
+          testRow.total_marks,
+          testRow.totalMarks,
+          0
+        )
+      );
 
-          score,
-        };
-      });
+    const durationMinutes =
+      Number(
+        firstDefined(
+          testRow.duration_minutes,
+          testRow.durationMinutes,
+          0
+        )
+      );
 
-    console.log(
-      `[analysis GET] ${series}/${testId} attempt=${attemptId} questions=${questions.length} sections=${sections.length}`
-    );
+    const test = {
+      id: testId,
+
+      series,
+
+      seriesId:
+        config.seriesId,
+
+      title:
+        firstDefined(
+          testRow.title,
+          testRow.name,
+          `Test ${testId}`
+        ),
+
+      slug:
+        firstDefined(
+          testRow.slug,
+          null
+        ),
+
+      description:
+        firstDefined(
+          testRow.description,
+          ""
+        ),
+
+      categoryId:
+        category
+          ? Number(category.id)
+          : normalizeId(
+              firstDefined(
+                testRow.category_id,
+                testRow.categoryId
+              )
+            ),
+
+      categorySlug,
+
+      categoryName,
+
+      durationMinutes,
+
+      totalQuestions,
+
+      totalMarks,
+
+      isPublished:
+        toBoolean(
+          firstDefined(
+            testRow.is_published,
+            testRow.isPublished,
+            1
+          )
+        ),
+    };
 
     /* -------------------------------------------------------
        RESPONSE
@@ -1436,11 +1243,121 @@ export async function GET(
       {
         success: true,
 
-        test: normalizedTest,
+        test,
 
-        attempt: normalizedAttempt,
+        attempt: {
+          id: Number(
+            attemptRow.id
+          ),
 
-        sections: sectionStats,
+          userId: Number(
+            attemptRow.user_id
+          ),
+
+          testId: Number(
+            attemptRow.test_id
+          ),
+
+          attemptNumber:
+            Number(
+              attemptRow.attempt_number
+            ),
+
+          status:
+            attemptStatus,
+
+          startedAt:
+            toIsoUtc(
+              attemptRow.started_at
+            ),
+
+          submittedAt:
+            toIsoUtc(
+              attemptRow.submitted_at
+            ),
+
+          deadlineAt:
+            toIsoUtc(
+              attemptRow.deadline_at
+            ),
+
+          score:
+            attemptRow.score ===
+              null ||
+            attemptRow.score ===
+              undefined
+              ? null
+              : Number(
+                  attemptRow.score
+                ),
+
+          totalMarks:
+            Number(
+              firstDefined(
+                attemptRow.total_marks,
+                totalMarks,
+                0
+              )
+            ),
+
+          correctCount:
+            Number(
+              firstDefined(
+                attemptRow.correct_count,
+                correctCount,
+                0
+              )
+            ),
+
+          wrongCount:
+            Number(
+              firstDefined(
+                attemptRow.wrong_count,
+                wrongCount,
+                0
+              )
+            ),
+
+          unansweredCount:
+            Number(
+              firstDefined(
+                attemptRow.unanswered_count,
+                unansweredCount,
+                0
+              )
+            ),
+
+          timeTakenSeconds:
+            Number(
+              firstDefined(
+                attemptRow.time_taken_seconds,
+                totalTimeSpentSeconds,
+                0
+              )
+            ),
+        },
+
+        summary: {
+          score:
+            Number(
+              attemptRow.score ??
+                totalScore
+            ),
+
+          totalMarks,
+
+          correctCount,
+
+          wrongCount,
+
+          unansweredCount,
+
+          totalQuestions,
+
+          totalTimeSpentSeconds,
+        },
+
+        sections,
 
         questions,
 
@@ -1462,8 +1379,10 @@ export async function GET(
 
           categorySlug,
 
-          isDpp:
-            categorySlug === "dpp",
+          categoryName,
+
+          attemptStatus:
+            attemptStatus,
         },
       },
       {
@@ -1472,16 +1391,14 @@ export async function GET(
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
-
           Pragma: "no-cache",
-
           Expires: "0",
         },
       }
     );
   } catch (error) {
     console.error(
-      "[GET /api/test/[series]/[id]/analysis] ERROR:",
+      "[analysis GET] ERROR:",
       error
     );
 
@@ -1489,7 +1406,7 @@ export async function GET(
       {
         error:
           error?.message ||
-          "Failed to load detailed analysis.",
+          "Failed to load analysis.",
       },
       {
         status: 500,

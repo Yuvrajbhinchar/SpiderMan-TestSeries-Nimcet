@@ -229,8 +229,8 @@ export async function GET(request) {
     |--------------------------------------------------------------------------
     | SESSION VALIDATION
     |
-    | Middleware validates JWT signature.
-    | Here we verify current session/device.
+    | JWT identifies the current user.
+    | DB is still used here only for current account/session/device state.
     |--------------------------------------------------------------------------
     */
 
@@ -308,38 +308,16 @@ export async function GET(request) {
     |--------------------------------------------------------------------------
     |
     | Free = always accessible
-    | Paid = active access + not expired
+    | Paid = verified JWT seriesAccess snapshot
+    |
+    | IMPORTANT:
+    | No user_series_access query is performed here.
     |--------------------------------------------------------------------------
     */
 
-    let hasAccess =
-      series === "free";
-
-    if (!hasAccess) {
-      const accessResult =
-        await db.execute({
-          sql: `
-            SELECT 1
-            FROM user_series_access
-            WHERE user_id = ?
-              AND series_id = ?
-              AND is_active = 1
-              AND (
-                expires_at IS NULL
-                OR datetime(expires_at)
-                  > CURRENT_TIMESTAMP
-              )
-            LIMIT 1
-          `,
-          args: [
-            currentUser.id,
-            seriesConfig.id,
-          ],
-        });
-
-      hasAccess =
-        accessResult.rows.length > 0;
-    }
+    const hasAccess =
+      series === "free" ||
+      currentUser.seriesAccess?.[series] === true;
 
     /*
     |--------------------------------------------------------------------------
@@ -378,7 +356,6 @@ export async function GET(request) {
     |--------------------------------------------------------------------------
     |
     | Subject filter is used ONLY for DPP.
-    | No "all" subject.
     |--------------------------------------------------------------------------
     */
 
@@ -421,25 +398,15 @@ export async function GET(request) {
 
     /*
     |--------------------------------------------------------------------------
-    | TEST QUERY
+    | STEP 1 — ONLY FETCH THIS PAGE OF TESTS
     |--------------------------------------------------------------------------
     |
-    | Dashboard receives:
-    | - test metadata
-    | - category
-    | - subjects
-    | - attempts
-    | - in-progress attempt
-    |
-    | Dashboard DOES NOT receive:
-    | - questions
-    | - options
-    | - correct answers
-    | - explanations
+    | We first get the 12 test rows.
+    | User attempts and subjects are loaded in two batch queries below.
     |--------------------------------------------------------------------------
     */
 
-    const result =
+    const testResult =
       await db.execute({
         sql: `
           SELECT
@@ -455,71 +422,7 @@ export async function GET(request) {
 
             c.id AS category_id,
             c.name AS category_name,
-            c.slug AS category_slug,
-
-            /*
-            --------------------------------------------------------------
-            | SUBJECTS
-            --------------------------------------------------------------
-            */
-
-            (
-              SELECT GROUP_CONCAT(
-                DISTINCT s.name
-              )
-              FROM ${seriesConfig.subjectsTable} tst_subject
-              INNER JOIN subjects s
-                ON s.id =
-                  tst_subject.subject_id
-              WHERE
-                tst_subject.test_id = t.id
-            ) AS subjects_csv,
-
-            /*
-            --------------------------------------------------------------
-            | COMPLETED ATTEMPTS
-            --------------------------------------------------------------
-            */
-
-            (
-              SELECT COUNT(*)
-              FROM ${seriesConfig.attemptsTable} ta
-              WHERE ta.user_id = ?
-                AND ta.test_id = t.id
-                AND ta.status = 'submitted'
-            ) AS attempts_used,
-
-            /*
-            --------------------------------------------------------------
-            | IN-PROGRESS ATTEMPT ID
-            --------------------------------------------------------------
-            */
-
-            (
-              SELECT ta2.id
-              FROM ${seriesConfig.attemptsTable} ta2
-              WHERE ta2.user_id = ?
-                AND ta2.test_id = t.id
-                AND ta2.status = 'in_progress'
-              ORDER BY ta2.id DESC
-              LIMIT 1
-            ) AS in_progress_attempt_id,
-
-            /*
-            --------------------------------------------------------------
-            | IN-PROGRESS ATTEMPT NUMBER
-            --------------------------------------------------------------
-            */
-
-            (
-              SELECT ta3.attempt_number
-              FROM ${seriesConfig.attemptsTable} ta3
-              WHERE ta3.user_id = ?
-                AND ta3.test_id = t.id
-                AND ta3.status = 'in_progress'
-              ORDER BY ta3.id DESC
-              LIMIT 1
-            ) AS in_progress_attempt_number
+            c.slug AS category_slug
 
           FROM ${seriesConfig.testsTable} t
 
@@ -528,7 +431,6 @@ export async function GET(request) {
 
           WHERE
             t.is_published = 1
-
             AND LOWER(c.slug) = ?
 
             ${subjectFilter.sql}
@@ -541,61 +443,279 @@ export async function GET(request) {
           LIMIT ${limit}
         `,
         args: [
-          currentUser.id,
-          currentUser.id,
-          currentUser.id,
-
           mode,
-
           ...subjectFilter.args,
           ...cursorArgs,
         ],
       });
 
+    const testRows =
+      Array.isArray(testResult.rows)
+        ? testResult.rows
+        : [];
+
     /*
     |--------------------------------------------------------------------------
-    | NORMALIZE TESTS
+    | EMPTY PAGE
+    |--------------------------------------------------------------------------
+    */
+
+    if (testRows.length === 0) {
+      return NextResponse.json(
+        {
+          success: true,
+
+          series: {
+            id: seriesConfig.id,
+            slug: series,
+            name: seriesConfig.name,
+          },
+
+          mode,
+
+          subject:
+            mode === "dpp"
+              ? subject || null
+              : null,
+
+          hasAccess: true,
+
+          tests: [],
+
+          nextCursor: null,
+        },
+        {
+          headers: {
+            "Cache-Control":
+              "private, no-store, max-age=0",
+            Pragma: "no-cache",
+            Expires: "0",
+          },
+        }
+      );
+    }
+
+    const testIds =
+      testRows
+        .map((row) => Number(row.id))
+        .filter(
+          (id) =>
+            Number.isInteger(id) &&
+            id > 0
+        );
+
+    const placeholders =
+      testIds
+        .map(() => "?")
+        .join(",");
+
+    /*
+    |--------------------------------------------------------------------------
+    | STEP 2 — SUBJECTS FOR CURRENT PAGE
+    |--------------------------------------------------------------------------
+    */
+
+    const subjectsResult =
+      await db.execute({
+        sql: `
+          SELECT
+            tst_subject.test_id,
+            GROUP_CONCAT(
+              DISTINCT s.name
+            ) AS subjects_csv
+
+          FROM ${seriesConfig.subjectsTable} tst_subject
+
+          INNER JOIN subjects s
+            ON s.id =
+              tst_subject.subject_id
+
+          WHERE
+            tst_subject.test_id
+              IN (${placeholders})
+
+          GROUP BY
+            tst_subject.test_id
+        `,
+        args: testIds,
+      });
+
+    /*
+    |--------------------------------------------------------------------------
+    | STEP 3 — CURRENT USER ATTEMPTS FOR CURRENT PAGE
+    |--------------------------------------------------------------------------
+    */
+
+    const attemptsResult =
+      await db.execute({
+        sql: `
+          SELECT
+            test_id,
+
+            SUM(
+              CASE
+                WHEN status = 'submitted'
+                THEN 1
+                ELSE 0
+              END
+            ) AS attempts_used,
+
+            MAX(
+              CASE
+                WHEN status = 'in_progress'
+                THEN id
+                ELSE NULL
+              END
+            ) AS in_progress_attempt_id,
+
+            MAX(
+              CASE
+                WHEN status = 'in_progress'
+                THEN attempt_number
+                ELSE NULL
+              END
+            ) AS in_progress_attempt_number
+
+          FROM ${seriesConfig.attemptsTable}
+
+          WHERE
+            user_id = ?
+            AND test_id
+              IN (${placeholders})
+
+          GROUP BY
+            test_id
+        `,
+        args: [
+          currentUser.id,
+          ...testIds,
+        ],
+      });
+
+    /*
+    |--------------------------------------------------------------------------
+    | MAP SUBJECTS
+    |--------------------------------------------------------------------------
+    */
+
+    const subjectsByTest =
+      new Map();
+
+    for (
+      const row of
+        subjectsResult.rows || []
+    ) {
+      const testId =
+        Number(row.test_id);
+
+      const subjects =
+        row.subjects_csv
+          ? String(
+              row.subjects_csv
+            )
+              .split(",")
+              .map(
+                (item) =>
+                  item.trim()
+              )
+              .filter(Boolean)
+          : [];
+
+      subjectsByTest.set(
+        testId,
+        subjects
+      );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | MAP ATTEMPTS
+    |--------------------------------------------------------------------------
+    */
+
+    const attemptsByTest =
+      new Map();
+
+    for (
+      const row of
+        attemptsResult.rows || []
+    ) {
+      const testId =
+        Number(row.test_id);
+
+      attemptsByTest.set(
+        testId,
+        {
+          attemptsUsed:
+            Number(
+              row.attempts_used ||
+                0
+            ),
+
+          inProgressAttemptId:
+            row.in_progress_attempt_id
+              ? Number(
+                  row.in_progress_attempt_id
+                )
+              : null,
+
+          inProgressAttemptNumber:
+            row.in_progress_attempt_number
+              ? Number(
+                  row.in_progress_attempt_number
+                )
+              : null,
+        }
+      );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | BUILD FINAL TEST RESPONSE
     |--------------------------------------------------------------------------
     */
 
     const tests =
-      result.rows.map((row) => {
+      testRows.map((row) => {
+        const testId =
+          Number(row.id);
+
+        const attemptStats =
+          attemptsByTest.get(
+            testId
+          ) || {
+            attemptsUsed: 0,
+            inProgressAttemptId:
+              null,
+            inProgressAttemptNumber:
+              null,
+          };
+
         const attemptsUsed =
           Number(
-            row.attempts_used || 0
+            attemptStats.attemptsUsed ||
+              0
           );
 
         const inProgressAttemptId =
-          row.in_progress_attempt_id
-            ? Number(
-                row.in_progress_attempt_id
-              )
-            : null;
+          attemptStats.inProgressAttemptId ||
+          null;
 
         const inProgressAttemptNumber =
-          row.in_progress_attempt_number
-            ? Number(
-                row.in_progress_attempt_number
-              )
-            : null;
+          attemptStats.inProgressAttemptNumber ||
+          null;
 
         const subjects =
-          row.subjects_csv
-            ? String(
-                row.subjects_csv
-              )
-                .split(",")
-                .map((item) =>
-                  item.trim()
-                )
-                .filter(Boolean)
-            : [];
+          subjectsByTest.get(
+            testId
+          ) || [];
 
         return {
-          id: Number(row.id),
+          id: testId,
 
           title:
-            row.title || "Untitled Test",
+            row.title ||
+            "Untitled Test",
 
           slug:
             row.slug || null,
@@ -606,17 +726,20 @@ export async function GET(request) {
 
           durationMinutes:
             Number(
-              row.duration_minutes || 0
+              row.duration_minutes ||
+                0
             ),
 
           totalQuestions:
             Number(
-              row.total_questions || 0
+              row.total_questions ||
+                0
             ),
 
           totalMarks:
             Number(
-              row.total_marks || 0
+              row.total_marks ||
+                0
             ),
 
           subjects,
@@ -637,7 +760,8 @@ export async function GET(request) {
 
           attemptsRemaining:
             Math.max(
-              3 - attemptsUsed,
+              3 -
+                attemptsUsed,
               0
             ),
 
@@ -677,28 +801,38 @@ export async function GET(request) {
     |--------------------------------------------------------------------------
     */
 
-    return NextResponse.json({
-      success: true,
+    return NextResponse.json(
+      {
+        success: true,
 
-      series: {
-        id: seriesConfig.id,
-        slug: series,
-        name: seriesConfig.name,
+        series: {
+          id: seriesConfig.id,
+          slug: series,
+          name: seriesConfig.name,
+        },
+
+        mode,
+
+        subject:
+          mode === "dpp"
+            ? subject || null
+            : null,
+
+        hasAccess: true,
+
+        tests,
+
+        nextCursor,
       },
-
-      mode,
-
-      subject:
-        mode === "dpp"
-          ? subject || null
-          : null,
-
-      hasAccess: true,
-
-      tests,
-
-      nextCursor,
-    });
+      {
+        headers: {
+          "Cache-Control":
+            "private, no-store, max-age=0",
+          Pragma: "no-cache",
+          Expires: "0",
+        },
+      }
+    );
   } catch (error) {
     console.error(
       "Dashboard tests API error:",
@@ -708,10 +842,13 @@ export async function GET(request) {
     return NextResponse.json(
       {
         success: false,
+
         error:
           "Unable to load tests right now.",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }
