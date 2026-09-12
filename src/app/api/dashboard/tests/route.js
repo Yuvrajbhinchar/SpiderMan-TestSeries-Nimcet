@@ -1,70 +1,34 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/lib/turso";
+
 import {
-  getCurrentUser,
-  clearAuthCookie,
-} from "@/lib/auth";
+  SERIES_CONFIG,
+  normalizeSeries,
+  firstDefined,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getSeriesState,
+} from "@/lib/testSecurity";
 
-export const dynamic = "force-dynamic";
+export const dynamic =
+  "force-dynamic";
 
-/*
-|--------------------------------------------------------------------------
-| SERIES CONFIG
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   ALLOWED MODES
+========================================================= */
 
-const SERIES_CONFIG = {
-  free: {
-    id: 1,
-    name: "Free",
-    testsTable: "free_tests",
-    subjectsTable: "free_test_subjects",
-    attemptsTable: "free_test_attempts",
-  },
+const ALLOWED_MODES =
+  new Set([
+    "dpp",
+    "mini",
+    "mock",
+    "live",
+  ]);
 
-  asspire: {
-    id: 2,
-    name: "Asspire",
-    testsTable: "asspire_tests",
-    subjectsTable: "asspire_test_subjects",
-    attemptsTable: "asspire_test_attempts",
-  },
-
-  imppetus: {
-    id: 3,
-    name: "Imppetus",
-    testsTable: "imppetus_tests",
-    subjectsTable: "imppetus_test_subjects",
-    attemptsTable: "imppetus_test_attempts",
-  },
-
-  spiderman: {
-    id: 4,
-    name: "SpiderMan",
-    testsTable: "spiderman_tests",
-    subjectsTable: "spiderman_test_subjects",
-    attemptsTable: "spiderman_test_attempts",
-  },
-};
-
-/*
-|--------------------------------------------------------------------------
-| ALLOWED MODES
-|--------------------------------------------------------------------------
-*/
-
-const ALLOWED_MODES = new Set([
-  "dpp",
-  "mini",
-  "mock",
-  "live",
-]);
-
-/*
-|--------------------------------------------------------------------------
-| FIXED SUBJECTS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   SUBJECT IDS
+========================================================= */
 
 const SUBJECT_IDS = {
   maths: 1,
@@ -73,27 +37,41 @@ const SUBJECT_IDS = {
   english: 4,
 };
 
-/*
-|--------------------------------------------------------------------------
-| HELPERS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   HELPERS
+========================================================= */
 
-function normalize(value) {
-  return String(value || "")
+function normalize(
+  value
+) {
+  return String(
+    value || ""
+  )
     .trim()
     .toLowerCase();
 }
 
-function getLimit(value) {
-  const number = Number(value);
+function getLimit(
+  value
+) {
+  const number =
+    Number(value);
 
-  if (!Number.isFinite(number)) {
+  if (
+    !Number.isFinite(
+      number
+    )
+  ) {
     return 12;
   }
 
   return Math.min(
-    Math.max(Math.floor(number), 1),
+    Math.max(
+      Math.floor(
+        number
+      ),
+      1
+    ),
     30
   );
 }
@@ -110,11 +88,15 @@ function getSubjectFilter({
   }
 
   const subjectId =
-    SUBJECT_IDS[subject];
+    SUBJECT_IDS[
+      subject
+    ];
 
   if (!subjectId) {
     return {
-      sql: "AND 1 = 0",
+      sql:
+        "AND 1 = 0",
+
       args: [],
     };
   }
@@ -124,80 +106,103 @@ function getSubjectFilter({
       AND EXISTS (
         SELECT 1
         FROM ${subjectsTable} tst_filter
-        WHERE tst_filter.test_id = t.id
+        WHERE
+          tst_filter.test_id = t.id
           AND tst_filter.subject_id = ?
       )
     `,
-    args: [subjectId],
+
+    args: [
+      subjectId,
+    ],
   };
 }
 
-/*
-|--------------------------------------------------------------------------
-| GET /api/dashboard/tests
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   GET /api/dashboard/tests
+========================================================= */
 
-export async function GET(request) {
+export async function GET(
+  request
+) {
   try {
-    /*
-    |--------------------------------------------------------------------------
-    | AUTH
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       AUTH
+       
+       Centralized:
+       - JWT
+       - user
+       - account active
+       - session
+       - device
+    ------------------------------------------------------- */
 
-    const currentUser =
-      await getCurrentUser();
+    const auth =
+      await requireAuthenticatedUser();
 
-    if (!currentUser?.id) {
-      return NextResponse.json(
-        {
-          authenticated: false,
-          error:
-            "Authentication required.",
-        },
-        { status: 401 }
-      );
+    if (!auth.ok) {
+      return auth.response;
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | QUERY PARAMS
-    |--------------------------------------------------------------------------
-    */
+    const {
+      userId,
+      currentUser,
+    } = auth;
 
-    const { searchParams } =
-      new URL(request.url);
+    /* -------------------------------------------------------
+       QUERY PARAMS
+    ------------------------------------------------------- */
 
-    const series = normalize(
-      searchParams.get("series") ||
-        "free"
+    const {
+      searchParams,
+    } = new URL(
+      request.url
     );
 
-    const mode = normalize(
-      searchParams.get("mode") ||
-        "dpp"
-    );
+    const series =
+      normalizeSeries(
+        searchParams.get(
+          "series"
+        ) ||
+          "free"
+      );
 
-    const subject = normalize(
-      searchParams.get("subject") || ""
-    );
+    const mode =
+      normalize(
+        searchParams.get(
+          "mode"
+        ) ||
+          "dpp"
+      );
+
+    const subject =
+      normalize(
+        searchParams.get(
+          "subject"
+        ) ||
+          ""
+      );
 
     const cursor =
-      searchParams.get("cursor");
+      searchParams.get(
+        "cursor"
+      );
 
-    const limit = getLimit(
-      searchParams.get("limit")
-    );
+    const limit =
+      getLimit(
+        searchParams.get(
+          "limit"
+        )
+      );
 
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATE SERIES
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       SERIES CONFIG
+    ------------------------------------------------------- */
 
     const seriesConfig =
-      SERIES_CONFIG[series];
+      SERIES_CONFIG[
+        series
+      ];
 
     if (!seriesConfig) {
       return NextResponse.json(
@@ -205,232 +210,236 @@ export async function GET(request) {
           error:
             "Invalid series.",
         },
-        { status: 400 }
+        {
+          status: 400,
+        }
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATE MODE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       MODE
+    ------------------------------------------------------- */
 
-    if (!ALLOWED_MODES.has(mode)) {
+    if (
+      !ALLOWED_MODES.has(
+        mode
+      )
+    ) {
       return NextResponse.json(
         {
           error:
             "Invalid test mode.",
         },
-        { status: 400 }
-      );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | SESSION VALIDATION
-    |
-    | JWT identifies the current user.
-    | DB is still used here only for current account/session/device state.
-    |--------------------------------------------------------------------------
-    */
-
-    const userResult =
-      await db.execute({
-        sql: `
-          SELECT
-            id,
-            username,
-            email,
-            display_name,
-            role,
-            is_active,
-            active_session_id,
-            active_device_id
-          FROM users
-          WHERE id = ?
-          LIMIT 1
-        `,
-        args: [currentUser.id],
-      });
-
-    if (!userResult.rows.length) {
-      await clearAuthCookie();
-
-      return NextResponse.json(
         {
-          authenticated: false,
-          error:
-            "User account not found.",
-        },
-        { status: 401 }
+          status: 400,
+        }
       );
     }
 
-    const user =
-      userResult.rows[0];
+    /* -------------------------------------------------------
+       SERIES ACCESS
+       
+       IMPORTANT:
+       
+       Free:
+         always accessible from entitlement perspective.
+       
+       Paid:
+         JWT snapshot only.
+       
+       No user_series_access query here.
+    ------------------------------------------------------- */
 
-    const sessionMatches =
-      String(
-        user.active_session_id || ""
-      ) ===
-      String(
-        currentUser.sessionId || ""
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
       );
 
-    const deviceMatches =
-      String(
-        user.active_device_id || ""
-      ) ===
-      String(
-        currentUser.deviceId || ""
+    if (!access.ok) {
+      return access.response;
+    }
+
+    /* -------------------------------------------------------
+       SERIES ACTIVE STATE
+       
+       This is an actual server-side availability control,
+       so we check test_series.is_active.
+    ------------------------------------------------------- */
+
+    const seriesState =
+      await getSeriesState(
+        seriesConfig.seriesId
       );
+
+    if (!seriesState.ok) {
+      return seriesState.response;
+    }
+
+    /* -------------------------------------------------------
+       INACTIVE SERIES
+       
+       User is authenticated and may technically have
+       entitlement, but there are no currently available
+       tests in this inactive series.
+    ------------------------------------------------------- */
 
     if (
-      Number(user.is_active) !== 1 ||
-      !sessionMatches ||
-      !deviceMatches
+      !seriesState.active
     ) {
-      await clearAuthCookie();
-
       return NextResponse.json(
         {
-          authenticated: false,
-          error:
-            "Session is no longer active.",
+          success: true,
+
+          series: {
+            id:
+              seriesConfig.seriesId,
+
+            slug:
+              series,
+
+            name:
+              seriesConfig.name,
+          },
+
+          mode,
+
+          subject:
+            mode === "dpp"
+              ? subject ||
+                null
+              : null,
+
+          hasAccess: true,
+
+          seriesActive: false,
+
+          tests: [],
+
+          nextCursor:
+            null,
         },
-        { status: 401 }
+        {
+          status: 200,
+
+          headers: {
+            "Cache-Control":
+              "private, no-store, max-age=0",
+
+            Pragma:
+              "no-cache",
+
+            Expires:
+              "0",
+          },
+        }
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | SERIES ACCESS
-    |--------------------------------------------------------------------------
-    |
-    | Free = always accessible
-    | Paid = verified JWT seriesAccess snapshot
-    |
-    | IMPORTANT:
-    | No user_series_access query is performed here.
-    |--------------------------------------------------------------------------
-    */
-
-    const hasAccess =
-      series === "free" ||
-      currentUser.seriesAccess?.[series] === true;
-
-    /*
-    |--------------------------------------------------------------------------
-    | NO ACCESS
-    |--------------------------------------------------------------------------
-    */
-
-    if (!hasAccess) {
-      return NextResponse.json({
-        success: true,
-
-        series: {
-          id: seriesConfig.id,
-          slug: series,
-          name: seriesConfig.name,
-        },
-
-        mode,
-
-        subject:
-          mode === "dpp"
-            ? subject || null
-            : null,
-
-        hasAccess: false,
-
-        tests: [],
-
-        nextCursor: null,
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | SUBJECT FILTER
-    |--------------------------------------------------------------------------
-    |
-    | Subject filter is used ONLY for DPP.
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       SUBJECT FILTER
+       
+       Subject filter is used ONLY for DPP.
+    ------------------------------------------------------- */
 
     const subjectFilter =
       mode === "dpp"
         ? getSubjectFilter({
             subject,
             subjectsTable:
-              seriesConfig.subjectsTable,
+              seriesConfig.testSubjectTable,
           })
         : {
             sql: "",
             args: [],
           };
 
-    /*
-    |--------------------------------------------------------------------------
-    | CURSOR FILTER
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       CURSOR
+    ------------------------------------------------------- */
 
-    let cursorSql = "";
-    let cursorArgs = [];
+    let cursorSql =
+      "";
+
+    let cursorArgs =
+      [];
 
     if (cursor) {
       const cursorId =
         Number(cursor);
 
       if (
-        Number.isInteger(cursorId) &&
+        Number.isInteger(
+          cursorId
+        ) &&
         cursorId > 0
       ) {
         cursorSql = `
           AND t.id < ?
         `;
 
-        cursorArgs = [cursorId];
+        cursorArgs = [
+          cursorId,
+        ];
       }
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 1 — ONLY FETCH THIS PAGE OF TESTS
-    |--------------------------------------------------------------------------
-    |
-    | We first get the 12 test rows.
-    | User attempts and subjects are loaded in two batch queries below.
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       STEP 1
+       
+       Fetch only this page of tests.
+       
+       PHASE 5 AVAILABILITY:
+       
+       series.is_active = 1
+       category.is_active = 1
+       test.is_published = 1
+    ------------------------------------------------------- */
 
     const testResult =
       await db.execute({
         sql: `
           SELECT
             t.id,
+
             t.title,
+
             t.slug,
+
             t.description,
+
             t.duration_minutes,
+
             t.total_questions,
+
             t.total_marks,
+
             t.is_published,
+
             t.created_at,
 
             c.id AS category_id,
+
             c.name AS category_name,
+
             c.slug AS category_slug
 
-          FROM ${seriesConfig.testsTable} t
+          FROM ${seriesConfig.testTable} t
 
           INNER JOIN test_categories c
-            ON c.id = t.category_id
+            ON c.id =
+              t.category_id
+
+          INNER JOIN test_series ts
+            ON ts.id = ?
 
           WHERE
-            t.is_published = 1
+            ts.is_active = 1
+
+            AND c.is_active = 1
+
+            AND t.is_published = 1
+
             AND LOWER(c.slug) = ?
 
             ${subjectFilter.sql}
@@ -442,89 +451,126 @@ export async function GET(request) {
 
           LIMIT ${limit}
         `,
+
         args: [
+          seriesConfig.seriesId,
+
           mode,
+
           ...subjectFilter.args,
+
           ...cursorArgs,
         ],
       });
 
     const testRows =
-      Array.isArray(testResult.rows)
+      Array.isArray(
+        testResult.rows
+      )
         ? testResult.rows
         : [];
 
-    /*
-    |--------------------------------------------------------------------------
-    | EMPTY PAGE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       EMPTY PAGE
+    ------------------------------------------------------- */
 
-    if (testRows.length === 0) {
+    if (
+      testRows.length ===
+      0
+    ) {
       return NextResponse.json(
         {
           success: true,
 
           series: {
-            id: seriesConfig.id,
-            slug: series,
-            name: seriesConfig.name,
+            id:
+              seriesConfig.seriesId,
+
+            slug:
+              series,
+
+            name:
+              seriesConfig.name,
           },
 
           mode,
 
           subject:
             mode === "dpp"
-              ? subject || null
+              ? subject ||
+                null
               : null,
 
           hasAccess: true,
 
+          seriesActive: true,
+
           tests: [],
 
-          nextCursor: null,
+          nextCursor:
+            null,
         },
         {
+          status: 200,
+
           headers: {
             "Cache-Control":
               "private, no-store, max-age=0",
-            Pragma: "no-cache",
-            Expires: "0",
+
+            Pragma:
+              "no-cache",
+
+            Expires:
+              "0",
           },
         }
       );
     }
 
+    /* -------------------------------------------------------
+       TEST IDS
+    ------------------------------------------------------- */
+
     const testIds =
       testRows
-        .map((row) => Number(row.id))
+        .map(
+          (row) =>
+            Number(
+              row.id
+            )
+        )
         .filter(
           (id) =>
-            Number.isInteger(id) &&
+            Number.isInteger(
+              id
+            ) &&
             id > 0
         );
 
     const placeholders =
       testIds
-        .map(() => "?")
+        .map(
+          () => "?"
+        )
         .join(",");
 
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 2 — SUBJECTS FOR CURRENT PAGE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       STEP 2
+       
+       SUBJECTS FOR CURRENT PAGE
+    ------------------------------------------------------- */
 
     const subjectsResult =
       await db.execute({
         sql: `
           SELECT
             tst_subject.test_id,
+
             GROUP_CONCAT(
               DISTINCT s.name
             ) AS subjects_csv
 
-          FROM ${seriesConfig.subjectsTable} tst_subject
+          FROM ${seriesConfig.testSubjectTable} tst_subject
 
           INNER JOIN subjects s
             ON s.id =
@@ -537,14 +583,16 @@ export async function GET(request) {
           GROUP BY
             tst_subject.test_id
         `,
-        args: testIds,
+
+        args:
+          testIds,
       });
 
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 3 — CURRENT USER ATTEMPTS FOR CURRENT PAGE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       STEP 3
+       
+       CURRENT USER ATTEMPTS FOR CURRENT PAGE
+    ------------------------------------------------------- */
 
     const attemptsResult =
       await db.execute({
@@ -576,37 +624,41 @@ export async function GET(request) {
               END
             ) AS in_progress_attempt_number
 
-          FROM ${seriesConfig.attemptsTable}
+          FROM ${seriesConfig.attemptTable}
 
           WHERE
             user_id = ?
-            AND test_id
-              IN (${placeholders})
+
+            AND test_id IN (
+              ${placeholders}
+            )
 
           GROUP BY
             test_id
         `,
+
         args: [
-          currentUser.id,
+          userId,
           ...testIds,
         ],
       });
 
-    /*
-    |--------------------------------------------------------------------------
-    | MAP SUBJECTS
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       MAP SUBJECTS
+    ------------------------------------------------------- */
 
     const subjectsByTest =
       new Map();
 
     for (
       const row of
-        subjectsResult.rows || []
+        subjectsResult.rows ||
+        []
     ) {
       const testId =
-        Number(row.test_id);
+        Number(
+          row.test_id
+        );
 
       const subjects =
         row.subjects_csv
@@ -618,7 +670,9 @@ export async function GET(request) {
                 (item) =>
                   item.trim()
               )
-              .filter(Boolean)
+              .filter(
+                Boolean
+              )
           : [];
 
       subjectsByTest.set(
@@ -627,21 +681,22 @@ export async function GET(request) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | MAP ATTEMPTS
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       MAP ATTEMPTS
+    ------------------------------------------------------- */
 
     const attemptsByTest =
       new Map();
 
     for (
       const row of
-        attemptsResult.rows || []
+        attemptsResult.rows ||
+        []
     ) {
       const testId =
-        Number(row.test_id);
+        Number(
+          row.test_id
+        );
 
       attemptsByTest.set(
         testId,
@@ -669,167 +724,207 @@ export async function GET(request) {
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | BUILD FINAL TEST RESPONSE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       STEP 4
+       
+       BUILD FINAL RESPONSE
+    ------------------------------------------------------- */
 
     const tests =
-      testRows.map((row) => {
-        const testId =
-          Number(row.id);
-
-        const attemptStats =
-          attemptsByTest.get(
-            testId
-          ) || {
-            attemptsUsed: 0,
-            inProgressAttemptId:
-              null,
-            inProgressAttemptNumber:
-              null,
-          };
-
-        const attemptsUsed =
-          Number(
-            attemptStats.attemptsUsed ||
-              0
-          );
-
-        const inProgressAttemptId =
-          attemptStats.inProgressAttemptId ||
-          null;
-
-        const inProgressAttemptNumber =
-          attemptStats.inProgressAttemptNumber ||
-          null;
-
-        const subjects =
-          subjectsByTest.get(
-            testId
-          ) || [];
-
-        return {
-          id: testId,
-
-          title:
-            row.title ||
-            "Untitled Test",
-
-          slug:
-            row.slug || null,
-
-          description:
-            row.description ||
-            null,
-
-          durationMinutes:
+      testRows.map(
+        (row) => {
+          const testId =
             Number(
-              row.duration_minutes ||
-                0
-            ),
+              row.id
+            );
 
-          totalQuestions:
+          const attemptStats =
+            attemptsByTest.get(
+              testId
+            ) || {
+              attemptsUsed: 0,
+
+              inProgressAttemptId:
+                null,
+
+              inProgressAttemptNumber:
+                null,
+            };
+
+          const attemptsUsed =
             Number(
-              row.total_questions ||
+              attemptStats.attemptsUsed ||
                 0
-            ),
+            );
 
-          totalMarks:
-            Number(
-              row.total_marks ||
-                0
-            ),
+          const inProgressAttemptId =
+            attemptStats.inProgressAttemptId ||
+            null;
 
-          subjects,
+          const inProgressAttemptNumber =
+            attemptStats.inProgressAttemptNumber ||
+            null;
 
-          category: {
-            id: Number(
-              row.category_id
-            ),
+          const subjects =
+            subjectsByTest.get(
+              testId
+            ) || [];
 
-            name:
-              row.category_name,
+          return {
+            id:
+              testId,
+
+            title:
+              row.title ||
+              "Untitled Test",
 
             slug:
-              row.category_slug,
-          },
+              row.slug ||
+              null,
 
-          attemptsUsed,
+            description:
+              row.description ||
+              null,
 
-          attemptsRemaining:
-            Math.max(
-              3 -
-                attemptsUsed,
-              0
-            ),
+            durationMinutes:
+              Number(
+                row.duration_minutes ||
+                  0
+              ),
 
-          hasInProgress:
-            Boolean(
-              inProgressAttemptId
-            ),
+            totalQuestions:
+              Number(
+                row.total_questions ||
+                  0
+              ),
 
-          inProgressAttemptId,
+            totalMarks:
+              Number(
+                row.total_marks ||
+                  0
+              ),
 
-          inProgressAttemptNumber,
+            /*
+             * Availability information is useful to the
+             * frontend without changing the existing UI.
+             */
 
-          attemptsExhausted:
-            attemptsUsed >= 3 &&
-            !inProgressAttemptId,
-        };
-      });
+            isPublished:
+              Number(
+                row.is_published ||
+                  0
+              ) === 1,
 
-    /*
-    |--------------------------------------------------------------------------
-    | NEXT CURSOR
-    |--------------------------------------------------------------------------
-    */
+            isAvailable:
+              true,
+
+            subjects,
+
+            category: {
+              id:
+                Number(
+                  row.category_id
+                ),
+
+              name:
+                row.category_name,
+
+              slug:
+                row.category_slug,
+            },
+
+            attemptsUsed,
+
+            attemptsRemaining:
+              Math.max(
+                3 -
+                  attemptsUsed,
+                0
+              ),
+
+            hasInProgress:
+              Boolean(
+                inProgressAttemptId
+              ),
+
+            inProgressAttemptId,
+
+            inProgressAttemptNumber,
+
+            attemptsExhausted:
+              attemptsUsed >=
+                3 &&
+              !inProgressAttemptId,
+          };
+        }
+      );
+
+    /* -------------------------------------------------------
+       NEXT CURSOR
+    ------------------------------------------------------- */
 
     const lastTest =
-      tests[tests.length - 1];
+      tests[
+        tests.length -
+          1
+      ];
 
     const nextCursor =
-      tests.length === limit &&
+      tests.length ===
+        limit &&
       lastTest?.id
-        ? String(lastTest.id)
+        ? String(
+            lastTest.id
+          )
         : null;
 
-    /*
-    |--------------------------------------------------------------------------
-    | RESPONSE
-    |--------------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       RESPONSE
+    ------------------------------------------------------- */
 
     return NextResponse.json(
       {
         success: true,
 
         series: {
-          id: seriesConfig.id,
-          slug: series,
-          name: seriesConfig.name,
+          id:
+            seriesConfig.seriesId,
+
+          slug:
+            series,
+
+          name:
+            seriesConfig.name,
         },
 
         mode,
 
         subject:
           mode === "dpp"
-            ? subject || null
+            ? subject ||
+              null
             : null,
 
         hasAccess: true,
+
+        seriesActive: true,
 
         tests,
 
         nextCursor,
       },
       {
+        status: 200,
+
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
-          Pragma: "no-cache",
-          Expires: "0",
+
+          Pragma:
+            "no-cache",
+
+          Expires:
+            "0",
         },
       }
     );
@@ -844,6 +939,7 @@ export async function GET(request) {
         success: false,
 
         error:
+          error?.message ||
           "Unable to load tests right now.",
       },
       {

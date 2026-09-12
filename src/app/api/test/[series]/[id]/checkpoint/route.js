@@ -1,19 +1,20 @@
 import { NextResponse } from "next/server";
 
-import {
-  db,
-} from "@/lib/turso";
+import { db } from "@/lib/turso";
 
 import {
-  getAccessibleTest,
-  requireRuntimeUser,
-} from "@/lib/testRuntime";
+  SERIES_CONFIG,
+  normalizeSeries,
+  normalizeId,
+  jsonError,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getTestById,
+} from "@/lib/testSecurity";
 
-/*
-|--------------------------------------------------------------------------
-| NORMALIZE ANSWERS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   NORMALIZE ANSWERS
+========================================================= */
 
 function normalizeAnswers(input) {
   const map = new Map();
@@ -44,9 +45,9 @@ function normalizeAnswers(input) {
       continue;
     }
 
-    /*
-     * Selected option
-     */
+    /* -------------------------------------------------------
+       Selected option
+    ------------------------------------------------------- */
 
     let selectedOptionId =
       null;
@@ -75,9 +76,9 @@ function normalizeAnswers(input) {
       }
     }
 
-    /*
-     * Question time
-     */
+    /* -------------------------------------------------------
+       Question time
+    ------------------------------------------------------- */
 
     const rawTime =
       Number(
@@ -95,9 +96,9 @@ function normalizeAnswers(input) {
           )
         : 0;
 
-    /*
-     * State
-     */
+    /* -------------------------------------------------------
+       State
+    ------------------------------------------------------- */
 
     const visited =
       item.visited
@@ -112,10 +113,9 @@ function normalizeAnswers(input) {
     /*
      * Last occurrence wins.
      *
-     * This also prevents duplicate question
-     * payloads from creating multiple writes.
+     * Duplicate question IDs therefore
+     * result in one database write only.
      */
-
     map.set(
       questionId,
       {
@@ -132,11 +132,9 @@ function normalizeAnswers(input) {
   );
 }
 
-/*
-|--------------------------------------------------------------------------
-| DATE HELPERS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   DATE HELPERS
+========================================================= */
 
 function parseDatabaseDate(
   value
@@ -146,9 +144,7 @@ function parseDatabaseDate(
   }
 
   const text =
-    String(
-      value
-    ).trim();
+    String(value).trim();
 
   if (!text) {
     return NaN;
@@ -180,19 +176,14 @@ function parseDatabaseDate(
    * ISO timestamp
    */
 
-  const parsed =
-    new Date(
-      text
-    ).getTime();
-
-  return parsed;
+  return new Date(
+    text
+  ).getTime();
 }
 
-/*
-|--------------------------------------------------------------------------
-| POST CHECKPOINT
-|--------------------------------------------------------------------------
-*/
+/* =========================================================
+   POST CHECKPOINT
+========================================================= */
 
 export async function POST(
   request,
@@ -200,80 +191,152 @@ export async function POST(
 ) {
   try {
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * PARAMS
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     const {
-      series,
-      id,
+      series: rawSeries,
+      id: rawId,
     } = await params;
 
+    const series =
+      normalizeSeries(
+        rawSeries
+      );
+
+    const testId =
+      normalizeId(
+        rawId
+      );
+
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
+     * BASIC VALIDATION
+     * ------------------------------------------------------
+     */
+
+    if (
+      !SERIES_CONFIG[
+        series
+      ]
+    ) {
+      return jsonError(
+        "Invalid test series.",
+        400,
+        "INVALID_SERIES"
+      );
+    }
+
+    if (!testId) {
+      return jsonError(
+        "Invalid test ID.",
+        400,
+        "INVALID_TEST_ID"
+      );
+    }
+
+    /*
+     * ------------------------------------------------------
      * AUTH
-     * ----------------------------------------------------------
+     *
+     * Centralized in testSecurity.js
+     * ------------------------------------------------------
      */
 
     const auth =
-      await requireRuntimeUser();
+      await requireAuthenticatedUser();
 
     if (!auth.ok) {
-      return NextResponse.json(
-        {
-          error:
-            auth.error,
-
-          ...(auth.code
-            ? {
-                code:
-                  auth.code,
-              }
-            : {}),
-        },
-        {
-          status:
-            auth.status,
-        }
-      );
-    }
-
-    /*
-     * ----------------------------------------------------------
-     * TEST ACCESS
-     * ----------------------------------------------------------
-     */
-
-    const access =
-      await getAccessibleTest(
-        series,
-        id,
-        auth.userId
-      );
-
-    if (!access.ok) {
-      return NextResponse.json(
-        {
-          error:
-            access.error,
-        },
-        {
-          status:
-            access.status,
-        }
-      );
+      return auth.response;
     }
 
     const {
-      config,
-      test,
-    } = access;
+      userId,
+      currentUser,
+    } = auth;
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
+     * SERIES ACCESS
+     *
+     * IMPORTANT:
+     *
+     * Paid access comes from the verified JWT snapshot.
+     *
+     * This route does NOT query
+     * user_series_access for entitlement.
+     * ------------------------------------------------------
+     */
+
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
+      );
+
+    if (!access.ok) {
+      return access.response;
+    }
+
+    /*
+     * ------------------------------------------------------
+     * TEST
+     * ------------------------------------------------------
+     */
+
+    const testResult =
+      await getTestById(
+        series,
+        testId
+      );
+
+    if (!testResult.ok) {
+      return testResult.response;
+    }
+
+    const {
+      test,
+      config: securityConfig,
+    } = testResult;
+
+    /*
+     * ------------------------------------------------------
+     * CONFIG
+     *
+     * Keep the existing checkpoint naming convention:
+     *
+     * attempts
+     * answers
+     * questions
+     * options
+     *
+     * The central security config stores the same series
+     * table names.
+     * ------------------------------------------------------
+     */
+
+    const config = {
+      ...securityConfig,
+
+      attempts:
+        securityConfig.attemptTable,
+
+      answers:
+        securityConfig.answerTable,
+
+      questions:
+        securityConfig.questionTable,
+
+      options:
+        securityConfig.optionTable,
+    };
+
+    /*
+     * ------------------------------------------------------
      * REQUEST BODY
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     const body =
@@ -295,9 +358,9 @@ export async function POST(
       );
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * ATTEMPT ID VALIDATION
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     if (
@@ -306,25 +369,19 @@ export async function POST(
       ) ||
       attemptId <= 0
     ) {
-      return NextResponse.json(
-        {
-          error:
-            "Valid attempt id is required.",
-        },
-        {
-          status: 400,
-        }
+      return jsonError(
+        "Valid attempt id is required.",
+        400,
+        "ATTEMPT_ID_REQUIRED"
       );
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * EMPTY CHECKPOINT
-     * ----------------------------------------------------------
      *
-     * Nothing to save.
-     *
-     * This is a successful no-op.
+     * Successful no-op.
+     * ------------------------------------------------------
      */
 
     if (
@@ -334,7 +391,9 @@ export async function POST(
       return NextResponse.json(
         {
           success: true,
+
           saved: 0,
+
           expired: false,
         },
         {
@@ -344,33 +403,29 @@ export async function POST(
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * MAX PAYLOAD
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     if (
       answers.length >
       200
     ) {
-      return NextResponse.json(
-        {
-          error:
-            "Too many answers in one checkpoint.",
-        },
-        {
-          status: 400,
-        }
+      return jsonError(
+        "Too many answers in one checkpoint.",
+        400,
+        "CHECKPOINT_TOO_LARGE"
       );
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * VERIFY ATTEMPT
-     * ----------------------------------------------------------
      *
      * Ownership + correct test + active status +
      * start/deadline in one query.
+     * ------------------------------------------------------
      */
 
     const attemptResult =
@@ -388,9 +443,10 @@ export async function POST(
             AND test_id = ?
           LIMIT 1
         `,
+
         args: [
           attemptId,
-          auth.userId,
+          userId,
           test.id,
         ],
       });
@@ -411,9 +467,9 @@ export async function POST(
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * ATTEMPT STATUS
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     if (
@@ -423,17 +479,16 @@ export async function POST(
       "in_progress"
     ) {
       /*
-       * If already submitted/closed, this is still
-       * not a server error.
-       *
-       * The client may be firing one last checkpoint
-       * during navigation.
+       * Client may fire one last checkpoint during
+       * navigation/submission.
        */
 
       return NextResponse.json(
         {
           success: true,
+
           saved: 0,
+
           expired:
             String(
               attempt.status
@@ -447,23 +502,15 @@ export async function POST(
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * EXPIRY CHECK
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      *
-     * IMPORTANT:
+     * Expired checkpoint is a successful no-op.
      *
-     * Previously this returned HTTP 410.
-     *
-     * That caused submitTest() to stop before calling
-     * the submit API.
-     *
-     * Now an expired checkpoint is treated as a
-     * successful no-op.
-     *
-     * The SUBMIT endpoint remains responsible for
-     * final scoring + auto submission.
-     * ----------------------------------------------------------
+     * Final scoring/submission stays the responsibility
+     * of the submit endpoint.
+     * ------------------------------------------------------
      */
 
     const deadlineTimestamp =
@@ -504,20 +551,20 @@ export async function POST(
     }
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * BUILD WRITE STATEMENTS
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      *
-     * Each statement:
+     * Every statement:
      *
      * - verifies question belongs to test
      * - verifies selected option belongs to question
-     * - inserts or updates attempt answer
+     * - upserts attempt answer
      *
-     * is_correct remains NULL here.
+     * is_correct stays NULL.
      *
-     * Scoring is intentionally done during final submit.
-     * ----------------------------------------------------------
+     * Final scoring is performed by submit.
+     * ------------------------------------------------------
      */
 
     const statements =
@@ -566,11 +613,9 @@ export async function POST(
                 OR EXISTS (
                   SELECT 1
                   FROM ${config.options} qo
-
                   WHERE
                     qo.id = ?
-                    AND qo.question_id =
-                      q.id
+                    AND qo.question_id = q.id
                 )
               )
 
@@ -651,9 +696,9 @@ export async function POST(
       );
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * WRITE
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     await db.batch(
@@ -662,9 +707,9 @@ export async function POST(
     );
 
     /*
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      * RESPONSE
-     * ----------------------------------------------------------
+     * ------------------------------------------------------
      */
 
     console.log(

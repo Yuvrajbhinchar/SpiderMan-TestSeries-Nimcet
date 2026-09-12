@@ -1,410 +1,32 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/lib/turso";
-import { getCurrentUser } from "@/lib/auth";
 
-/* =========================================================
-   SERIES CONFIG
-========================================================= */
-
-const SERIES_CONFIG = {
-  free: {
-    seriesId: 1,
-    testTable: "free_tests",
-    sectionTable: "free_test_sections",
-    questionTable: "free_questions",
-    optionTable: "free_question_options",
-    attemptTable: "free_test_attempts",
-    answerTable: "free_attempt_answers",
-  },
-
-  asspire: {
-    seriesId: 2,
-    testTable: "asspire_tests",
-    sectionTable: "asspire_test_sections",
-    questionTable: "asspire_questions",
-    optionTable: "asspire_question_options",
-    attemptTable: "asspire_test_attempts",
-    answerTable: "asspire_attempt_answers",
-  },
-
-  imppetus: {
-    seriesId: 3,
-    testTable: "imppetus_tests",
-    sectionTable: "imppetus_test_sections",
-    questionTable: "imppetus_questions",
-    optionTable: "imppetus_question_options",
-    attemptTable: "imppetus_test_attempts",
-    answerTable: "imppetus_attempt_answers",
-  },
-
-  spiderman: {
-    seriesId: 4,
-    testTable: "spiderman_tests",
-    sectionTable: "spiderman_test_sections",
-    questionTable: "spiderman_questions",
-    optionTable: "spiderman_question_options",
-    attemptTable: "spiderman_test_attempts",
-    answerTable: "spiderman_attempt_answers",
-  },
-};
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function normalizeSeries(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeId(value) {
-  const id = Number(value);
-
-  if (!Number.isInteger(id) || id <= 0) {
-    return null;
-  }
-
-  return id;
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value);
-
-  return Number.isFinite(n)
-    ? n
-    : fallback;
-}
-
-function toBoolean(value) {
-  return (
-    value === true ||
-    value === 1 ||
-    value === "1"
-  );
-}
-
-function toIsoUtc(value) {
-  if (!value) return null;
-
-  const text = String(value);
-
-  /*
-   * Turso / SQLite:
-   * YYYY-MM-DD HH:mm:ss
-   */
-  if (
-    text.length === 19 &&
-    text[4] === "-" &&
-    text[7] === "-" &&
-    text[10] === " " &&
-    text[13] === ":" &&
-    text[16] === ":"
-  ) {
-    return `${text.replace(" ", "T")}Z`;
-  }
-
-  const date = new Date(text);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString();
-}
-
-function firstDefined(...values) {
-  for (const value of values) {
-    if (
-      value !== undefined &&
-      value !== null
-    ) {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function jsonError(
-  message,
-  status = 400,
-  code = null
-) {
-  return NextResponse.json(
-    {
-      error: message,
-      ...(code ? { code } : {}),
-    },
-    { status }
-  );
-}
-
-/* =========================================================
-   AUTH + USER VALIDATION
-========================================================= */
-
-async function getAuthenticatedUser() {
-  const currentUser =
-    await getCurrentUser();
-
-  if (!currentUser?.id) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Please login to continue.",
-        401,
-        "UNAUTHORIZED"
-      ),
-    };
-  }
-
-  const userId =
-    Number(currentUser.id);
-
-  if (
-    !Number.isInteger(userId) ||
-    userId <= 0
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Invalid user session.",
-        401,
-        "INVALID_SESSION"
-      ),
-    };
-  }
-
-  const userResult =
-    await db.execute({
-      sql: `
-        SELECT
-          id,
-          username,
-          role,
-          is_active,
-          active_session_id,
-          active_device_id
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-      `,
-      args: [userId],
-    });
-
-  const user =
-    userResult.rows?.[0];
-
-  if (!user) {
-    return {
-      ok: false,
-      response: jsonError(
-        "User account not found.",
-        401,
-        "USER_NOT_FOUND"
-      ),
-    };
-  }
-
-  if (
-    Number(user.is_active) !== 1
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Your account is inactive.",
-        403,
-        "ACCOUNT_INACTIVE"
-      ),
-    };
-  }
-
-  const jwtSessionId =
-    firstDefined(
-      currentUser.sessionId,
-      currentUser.session_id,
-      null
-    );
-
-  const jwtDeviceId =
-    firstDefined(
-      currentUser.deviceId,
-      currentUser.device_id,
-      null
-    );
-
-  /*
-   * SESSION VALIDATION
-   *
-   * JWT must contain a session ID.
-   * DB must contain the currently active session ID.
-   * Both must match exactly.
-   */
-  if (
-    !jwtSessionId ||
-    !user.active_session_id ||
-    String(jwtSessionId) !==
-      String(user.active_session_id)
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Your session is no longer active.",
-        401,
-        "SESSION_REVOKED"
-      ),
-    };
-  }
-
-  /*
-   * DEVICE VALIDATION
-   *
-   * JWT must contain a device ID.
-   * DB must contain the currently active device ID.
-   * Both must match exactly.
-   */
-  if (
-    !jwtDeviceId ||
-    !user.active_device_id ||
-    String(jwtDeviceId) !==
-      String(user.active_device_id)
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "This device is no longer active.",
-        401,
-        "DEVICE_REVOKED"
-      ),
-    };
-  }
-
-  return {
-    ok: true,
-    user,
-    currentUser,
-    userId,
-  };
-}
-
-/* =========================================================
-   TEST ACCESS
-========================================================= */
-
-async function getTestContext(
-  series,
-  testId,
-  userId,
-  currentUser
-) {
-  const config =
-    SERIES_CONFIG[series];
-
-  const testResult =
-    await db.execute({
-      sql: `
-        SELECT *
-        FROM ${config.testTable}
-        WHERE id = ?
-        LIMIT 1
-      `,
-      args: [testId],
-    });
-
-  const testRow =
-    testResult.rows?.[0];
-
-  if (!testRow) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Test not found.",
-        404,
-        "TEST_NOT_FOUND"
-      ),
-    };
-  }
-
-  /* -------------------------------------------------------
-     SERIES ACCESS
-
-     Free series are always accessible.
-     Paid-series entitlement is checked from the verified JWT.
-
-     IMPORTANT:
-     Do NOT query user_series_access here.
-  ------------------------------------------------------- */
-
-  const hasAccess =
-    config.seriesId === 1 ||
-    currentUser?.seriesAccess?.[series] === true;
-
-  if (!hasAccess) {
-    return {
-      ok: false,
-      response: jsonError(
-        "You do not have access to this test series.",
-        403,
-        "SERIES_ACCESS_REQUIRED"
-      ),
-    };
-  }
-
-  /* -------------------------------------------------------
-     CATEGORY
-  ------------------------------------------------------- */
-
-  let category = null;
-
-  const categoryId =
-    normalizeId(
-      firstDefined(
-        testRow.category_id,
-        testRow.categoryId
-      )
-    );
-
-  if (categoryId) {
-    try {
-      const categoryResult =
-        await db.execute({
-          sql: `
-            SELECT
-              id,
-              name,
-              slug,
-              parent_id,
-              is_active
-            FROM test_categories
-            WHERE id = ?
-            LIMIT 1
-          `,
-          args: [categoryId],
-        });
-
-      category =
-        categoryResult.rows?.[0] ||
-        null;
-    } catch (error) {
-      console.warn(
-        "[attempt] Category lookup failed:",
-        error
-      );
-    }
-  }
-
-  return {
-    ok: true,
-    config,
-    testRow,
-    category,
-  };
-}
+import {
+  SERIES_CONFIG,
+  normalizeSeries,
+  normalizeId,
+  toNumber,
+  toBoolean,
+  firstDefined,
+  toIsoUtc,
+  jsonError,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getTestById,
+  getTestCategory,
+  requireTestAvailability,
+} from "@/lib/testSecurity";
 
 /* =========================================================
    GET
    /api/test/[series]/[id]/attempt?attemptId=123
+
+   IMPORTANT:
+   Existing/in-progress attempts are allowed to load even
+   when the test has subsequently been made inactive.
+
+   This is intentional.
 ========================================================= */
 
 export async function GET(
@@ -418,25 +40,37 @@ export async function GET(
     } = await params;
 
     const series =
-      normalizeSeries(rawSeries);
+      normalizeSeries(
+        rawSeries
+      );
 
     const testId =
-      normalizeId(rawId);
+      normalizeId(
+        rawId
+      );
 
     const {
       searchParams,
-    } = new URL(request.url);
+    } = new URL(
+      request.url
+    );
 
     const attemptId =
       normalizeId(
-        searchParams.get("attemptId")
+        searchParams.get(
+          "attemptId"
+        )
       );
 
     /* -------------------------------------------------------
        VALIDATION
     ------------------------------------------------------- */
 
-    if (!SERIES_CONFIG[series]) {
+    if (
+      !SERIES_CONFIG[
+        series
+      ]
+    ) {
       return jsonError(
         "Invalid test series.",
         400,
@@ -465,7 +99,7 @@ export async function GET(
     ------------------------------------------------------- */
 
     const auth =
-      await getAuthenticatedUser();
+      await requireAuthenticatedUser();
 
     if (!auth.ok) {
       return auth.response;
@@ -477,23 +111,45 @@ export async function GET(
       currentUser,
     } = auth;
 
-    const testContext =
-      await getTestContext(
-        series,
-        testId,
-        userId,
-        currentUser
+    /* -------------------------------------------------------
+       SERIES ACCESS
+       
+       Paid access remains JWT based.
+    ------------------------------------------------------- */
+
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
       );
 
-    if (!testContext.ok) {
-      return testContext.response;
+    if (!access.ok) {
+      return access.response;
+    }
+
+    /* -------------------------------------------------------
+       TEST
+    ------------------------------------------------------- */
+
+    const testResult =
+      await getTestById(
+        series,
+        testId
+      );
+
+    if (!testResult.ok) {
+      return testResult.response;
     }
 
     const {
       config,
-      testRow,
-      category,
-    } = testContext;
+      test: testRow,
+    } = testResult;
+
+    const category =
+      await getTestCategory(
+        testRow
+      );
 
     /* -------------------------------------------------------
        ATTEMPT
@@ -504,12 +160,15 @@ export async function GET(
         sql: `
           SELECT *
           FROM ${config.attemptTable}
+
           WHERE
             id = ?
             AND user_id = ?
             AND test_id = ?
+
           LIMIT 1
         `,
+
         args: [
           attemptId,
           userId,
@@ -553,23 +212,26 @@ export async function GET(
       ).toLowerCase();
 
     const normalizedAttempt = {
-      id: Number(
-        attemptRow.id
-      ),
+      id:
+        Number(
+          attemptRow.id
+        ),
 
-      userId: Number(
-        firstDefined(
-          attemptRow.user_id,
-          attemptRow.userId
-        )
-      ),
+      userId:
+        Number(
+          firstDefined(
+            attemptRow.user_id,
+            attemptRow.userId
+          )
+        ),
 
-      testId: Number(
-        firstDefined(
-          attemptRow.test_id,
-          attemptRow.testId
-        )
-      ),
+      testId:
+        Number(
+          firstDefined(
+            attemptRow.test_id,
+            attemptRow.testId
+          )
+        ),
 
       eventId:
         firstDefined(
@@ -585,105 +247,122 @@ export async function GET(
               )
             ),
 
-      attemptNumber: Number(
-        firstDefined(
-          attemptRow.attempt_number,
-          attemptRow.attemptNumber,
-          1
-        )
-      ),
+      attemptNumber:
+        Number(
+          firstDefined(
+            attemptRow.attempt_number,
+            attemptRow.attemptNumber,
+            1
+          )
+        ),
 
       status,
 
-      startedAt: toIsoUtc(
-        firstDefined(
-          attemptRow.started_at,
-          attemptRow.startedAt
-        )
-      ),
-
-      submittedAt: toIsoUtc(
-        firstDefined(
-          attemptRow.submitted_at,
-          attemptRow.submittedAt
-        )
-      ),
-
-      deadlineAt: toIsoUtc(
-        firstDefined(
-          attemptRow.deadline_at,
-          attemptRow.deadlineAt
-        )
-      ),
-
-      score: toNumber(
-        attemptRow.score,
-        null
-      ),
-
-      totalMarks: toNumber(
-        firstDefined(
-          attemptRow.total_marks,
-          attemptRow.totalMarks
+      startedAt:
+        toIsoUtc(
+          firstDefined(
+            attemptRow.started_at,
+            attemptRow.startedAt
+          )
         ),
-        0
-      ),
 
-      correctCount: toNumber(
-        firstDefined(
-          attemptRow.correct_count,
-          attemptRow.correctCount
+      submittedAt:
+        toIsoUtc(
+          firstDefined(
+            attemptRow.submitted_at,
+            attemptRow.submittedAt
+          )
         ),
-        0
-      ),
 
-      wrongCount: toNumber(
-        firstDefined(
-          attemptRow.wrong_count,
-          attemptRow.wrongCount
+      deadlineAt:
+        toIsoUtc(
+          firstDefined(
+            attemptRow.deadline_at,
+            attemptRow.deadlineAt
+          )
         ),
-        0
-      ),
 
-      unansweredCount: toNumber(
-        firstDefined(
-          attemptRow.unanswered_count,
-          attemptRow.unansweredCount
+      score:
+        toNumber(
+          attemptRow.score,
+          null
         ),
-        0
-      ),
 
-      timeTakenSeconds: toNumber(
-        firstDefined(
-          attemptRow.time_taken_seconds,
-          attemptRow.timeTakenSeconds
+      totalMarks:
+        toNumber(
+          firstDefined(
+            attemptRow.total_marks,
+            attemptRow.totalMarks
+          ),
+          0
         ),
-        0
-      ),
 
-      createdAt: toIsoUtc(
-        firstDefined(
-          attemptRow.created_at,
-          attemptRow.createdAt
-        )
-      ),
+      correctCount:
+        toNumber(
+          firstDefined(
+            attemptRow.correct_count,
+            attemptRow.correctCount
+          ),
+          0
+        ),
+
+      wrongCount:
+        toNumber(
+          firstDefined(
+            attemptRow.wrong_count,
+            attemptRow.wrongCount
+          ),
+          0
+        ),
+
+      unansweredCount:
+        toNumber(
+          firstDefined(
+            attemptRow.unanswered_count,
+            attemptRow.unansweredCount
+          ),
+          0
+        ),
+
+      timeTakenSeconds:
+        toNumber(
+          firstDefined(
+            attemptRow.time_taken_seconds,
+            attemptRow.timeTakenSeconds
+          ),
+          0
+        ),
+
+      createdAt:
+        toIsoUtc(
+          firstDefined(
+            attemptRow.created_at,
+            attemptRow.createdAt
+          )
+        ),
     };
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SECTIONS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const sectionResult =
       await db.execute({
         sql: `
           SELECT *
           FROM ${config.sectionTable}
-          WHERE test_id = ?
+
+          WHERE
+            test_id = ?
+
           ORDER BY
             section_order ASC,
             id ASC
         `,
-        args: [testId],
+
+        args: [
+          testId,
+        ],
       });
 
     const rawSections =
@@ -695,22 +374,31 @@ export async function GET(
 
     const sections =
       rawSections.map(
-        (section, index) => ({
-          id: Number(section.id),
+        (
+          section,
+          index
+        ) => ({
+          id:
+            Number(
+              section.id
+            ),
 
-          testId: Number(
-            firstDefined(
-              section.test_id,
-              section.testId,
-              testId
-            )
-          ),
+          testId:
+            Number(
+              firstDefined(
+                section.test_id,
+                section.testId,
+                testId
+              )
+            ),
 
           sectionName:
             firstDefined(
               section.section_name,
               section.sectionName,
-              `Section ${index + 1}`
+              `Section ${
+                index + 1
+              }`
             ),
 
           sectionOrder:
@@ -762,21 +450,27 @@ export async function GET(
         })
       );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        QUESTIONS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const questionResult =
       await db.execute({
         sql: `
           SELECT *
           FROM ${config.questionTable}
-          WHERE test_id = ?
+
+          WHERE
+            test_id = ?
+
           ORDER BY
             question_order ASC,
             id ASC
         `,
-        args: [testId],
+
+        args: [
+          testId,
+        ],
       });
 
     const rawQuestions =
@@ -787,7 +481,8 @@ export async function GET(
         : [];
 
     if (
-      rawQuestions.length === 0
+      rawQuestions.length ===
+      0
     ) {
       console.error(
         `[attempt GET] No questions for ${series}/${testId}`
@@ -803,27 +498,39 @@ export async function GET(
     const questionIds =
       rawQuestions
         .map(
-          (question) =>
-            Number(question.id)
+          (
+            question
+          ) =>
+            Number(
+              question.id
+            )
         )
         .filter(
-          (questionId) =>
+          (
+            questionId
+          ) =>
             Number.isInteger(
               questionId
             ) &&
             questionId > 0
         );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        OPTIONS
-    ------------------------------------------------------- */
+    ======================================================= */
 
-    let rawOptions = [];
+    let rawOptions =
+      [];
 
-    if (questionIds.length > 0) {
+    if (
+      questionIds.length >
+      0
+    ) {
       const placeholders =
         questionIds
-          .map(() => "?")
+          .map(
+            () => "?"
+          )
           .join(",");
 
       const optionsResult =
@@ -831,13 +538,18 @@ export async function GET(
           sql: `
             SELECT *
             FROM ${config.optionTable}
-            WHERE question_id IN (${placeholders})
+
+            WHERE
+              question_id IN (${placeholders})
+
             ORDER BY
               question_id ASC,
               option_order ASC,
               id ASC
           `,
-          args: questionIds,
+
+          args:
+            questionIds,
         });
 
       rawOptions =
@@ -848,23 +560,17 @@ export async function GET(
           : [];
     }
 
-    /* -------------------------------------------------------
-       GROUP OPTIONS BY QUESTION
-
-       IMPORTANT:
-       Existing Attempt UI expects:
-         option.label
-         option.text
-
-       We provide those fields directly.
-
-       is_correct is NEVER sent to client.
-    ------------------------------------------------------- */
+    /* =======================================================
+       OPTIONS BY QUESTION
+    ======================================================= */
 
     const optionsByQuestion =
       new Map();
 
-    for (const option of rawOptions) {
+    for (
+      const option of
+        rawOptions
+    ) {
       const questionId =
         Number(
           firstDefined(
@@ -909,11 +615,14 @@ export async function GET(
         );
 
       optionsByQuestion
-        .get(questionId)
+        .get(
+          questionId
+        )
         .push({
-          id: Number(
-            option.id
-          ),
+          id:
+            Number(
+              option.id
+            ),
 
           label,
 
@@ -936,19 +645,26 @@ export async function GET(
         });
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SAVED ANSWERS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const answerResult =
       await db.execute({
         sql: `
           SELECT *
           FROM ${config.answerTable}
-          WHERE attempt_id = ?
-          ORDER BY question_id ASC
+
+          WHERE
+            attempt_id = ?
+
+          ORDER BY
+            question_id ASC
         `,
-        args: [attemptId],
+
+        args: [
+          attemptId,
+        ],
       });
 
     const rawAnswers =
@@ -961,7 +677,10 @@ export async function GET(
     const answersByQuestion =
       new Map();
 
-    for (const answer of rawAnswers) {
+    for (
+      const answer of
+        rawAnswers
+    ) {
       const questionId =
         Number(
           firstDefined(
@@ -1032,31 +751,39 @@ export async function GET(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SECTION MAP
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const sectionMap =
       new Map();
 
     for (
-      const section of sections
+      const section of
+        sections
     ) {
       sectionMap.set(
-        Number(section.id),
+        Number(
+          section.id
+        ),
         section
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        QUESTIONS NORMALIZED
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const questions =
       rawQuestions.map(
-        (question, index) => {
+        (
+          question,
+          index
+        ) => {
           const questionId =
-            Number(question.id);
+            Number(
+              question.id
+            );
 
           const sectionId =
             firstDefined(
@@ -1077,15 +804,17 @@ export async function GET(
             );
 
           return {
-            id: questionId,
+            id:
+              questionId,
 
-            testId: Number(
-              firstDefined(
-                question.test_id,
-                question.testId,
-                testId
-              )
-            ),
+            testId:
+              Number(
+                firstDefined(
+                  question.test_id,
+                  question.testId,
+                  testId
+                )
+              ),
 
             sectionId,
 
@@ -1093,7 +822,8 @@ export async function GET(
               sectionId !== null
                 ? sectionMap.get(
                     sectionId
-                  )?.sectionName ||
+                  )
+                    ?.sectionName ||
                   null
                 : null,
 
@@ -1105,15 +835,6 @@ export async function GET(
                 ""
               ),
 
-            /*
-             * -------------------------------------------------
-             * QUESTION IMAGE
-             *
-             * NULL when no image exists.
-             * Otherwise contains the Cloudinary (or future
-             * image-hosting) URL stored in the database.
-             * -------------------------------------------------
-             */
             questionImageUrl:
               firstDefined(
                 question.question_image_url,
@@ -1190,9 +911,9 @@ export async function GET(
         }
       );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        CATEGORY / TIMER FLAGS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const categorySlug =
       String(
@@ -1211,7 +932,8 @@ export async function GET(
       );
 
     const isDpp =
-      categorySlug === "dpp";
+      categorySlug ===
+      "dpp";
 
     const hasTimedSections =
       sections.some(
@@ -1236,12 +958,13 @@ export async function GET(
           )
       );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        TEST OBJECT
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const test = {
-      id: testId,
+      id:
+        testId,
 
       series,
 
@@ -1250,7 +973,9 @@ export async function GET(
 
       categoryId:
         category
-          ? Number(category.id)
+          ? Number(
+              category.id
+            )
           : normalizeId(
               firstDefined(
                 testRow.category_id,
@@ -1268,6 +993,28 @@ export async function GET(
         sectional,
 
       sectional,
+
+      /*
+       * PHASE 5 TEST STATE
+       */
+
+      isActive:
+        Number(
+          firstDefined(
+            testRow.is_active,
+            testRow.isActive,
+            0
+          )
+        ) === 1,
+
+      isPublished:
+        toBoolean(
+          firstDefined(
+            testRow.is_published,
+            testRow.isPublished,
+            0
+          )
+        ),
 
       title:
         firstDefined(
@@ -1314,24 +1061,11 @@ export async function GET(
             0
           )
         ),
-
-      isPublished:
-        toBoolean(
-          firstDefined(
-            testRow.is_published,
-            testRow.isPublished,
-            1
-          )
-        ),
     };
 
-    console.log(
-      `[attempt GET] ${series}/${testId} attempt=${attemptId} questions=${questions.length} options=${rawOptions.length} sections=${sections.length} category=${categorySlug || "none"} dpp=${isDpp} sectional=${sectional}`
-    );
-
-    /* -------------------------------------------------------
+    /* =======================================================
        RESPONSE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     return NextResponse.json(
       {
@@ -1373,6 +1107,13 @@ export async function GET(
           isDpp,
 
           sectional,
+
+          /*
+           * GET is intentionally allowed for an existing
+           * attempt even when availability changed later.
+           */
+          availabilityCheckSkipped:
+            true,
         },
       },
       {
@@ -1381,8 +1122,12 @@ export async function GET(
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
-          Pragma: "no-cache",
-          Expires: "0",
+
+          Pragma:
+            "no-cache",
+
+          Expires:
+            "0",
         },
       }
     );
@@ -1411,6 +1156,17 @@ export async function GET(
 
    mode = "new"
    mode = "resume"
+
+   PHASE 5 RULE:
+
+   NEW:
+     availability required
+
+   RESUME:
+     availability NOT required
+
+   Existing active attempt:
+     resume even if availability has changed
 ========================================================= */
 
 export async function POST(
@@ -1418,22 +1174,34 @@ export async function POST(
   { params }
 ) {
   try {
+    /* -------------------------------------------------------
+       PARAMS
+    ------------------------------------------------------- */
+
     const {
       series: rawSeries,
       id: rawId,
     } = await params;
 
     const series =
-      normalizeSeries(rawSeries);
+      normalizeSeries(
+        rawSeries
+      );
 
     const testId =
-      normalizeId(rawId);
+      normalizeId(
+        rawId
+      );
 
     /* -------------------------------------------------------
        VALIDATION
     ------------------------------------------------------- */
 
-    if (!SERIES_CONFIG[series]) {
+    if (
+      !SERIES_CONFIG[
+        series
+      ]
+    ) {
       return jsonError(
         "Invalid test series.",
         400,
@@ -1450,14 +1218,16 @@ export async function POST(
     }
 
     const config =
-      SERIES_CONFIG[series];
+      SERIES_CONFIG[
+        series
+      ];
 
     /* -------------------------------------------------------
        AUTH
     ------------------------------------------------------- */
 
     const auth =
-      await getAuthenticatedUser();
+      await requireAuthenticatedUser();
 
     if (!auth.ok) {
       return auth.response;
@@ -1469,17 +1239,34 @@ export async function POST(
     } = auth;
 
     /* -------------------------------------------------------
+       SERIES ACCESS
+    ------------------------------------------------------- */
+
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
+      );
+
+    if (!access.ok) {
+      return access.response;
+    }
+
+    /* -------------------------------------------------------
        BODY
     ------------------------------------------------------- */
 
     const body =
       await request
         .json()
-        .catch(() => ({}));
+        .catch(
+          () => ({})
+        );
 
     const mode =
       String(
-        body?.mode || "new"
+        body?.mode ||
+          "new"
       )
         .trim()
         .toLowerCase();
@@ -1501,32 +1288,44 @@ export async function POST(
     }
 
     /* -------------------------------------------------------
-       TEST ACCESS
+       TEST
     ------------------------------------------------------- */
 
-    const testContext =
-      await getTestContext(
+    const testResult =
+      await getTestById(
         series,
-        testId,
-        userId,
-        currentUser
+        testId
       );
 
-    if (!testContext.ok) {
-      return testContext.response;
+    if (!testResult.ok) {
+      return testResult.response;
     }
 
     const {
-      testRow,
-      category,
-    } = testContext;
+      test: testRow,
+    } = testResult;
 
-    /* -------------------------------------------------------
+    const category =
+      await getTestCategory(
+        testRow
+      );
+
+    /* =======================================================
        RESUME SPECIFIC ATTEMPT
-    ------------------------------------------------------- */
+       
+       IMPORTANT:
+       
+       Availability is intentionally NOT checked here.
+       
+       An already-started attempt should remain resumable.
+    ======================================================= */
 
-    if (mode === "resume") {
-      if (!requestedAttemptId) {
+    if (
+      mode === "resume"
+    ) {
+      if (
+        !requestedAttemptId
+      ) {
         return jsonError(
           "Valid attempt ID is required.",
           400,
@@ -1539,12 +1338,15 @@ export async function POST(
           sql: `
             SELECT *
             FROM ${config.attemptTable}
+
             WHERE
               id = ?
               AND user_id = ?
               AND test_id = ?
+
             LIMIT 1
           `,
+
           args: [
             requestedAttemptId,
             userId,
@@ -1564,7 +1366,9 @@ export async function POST(
       }
 
       if (
-        String(attempt.status) !==
+        String(
+          attempt.status
+        ) !==
         "in_progress"
       ) {
         return jsonError(
@@ -1602,20 +1406,24 @@ export async function POST(
 
           resumed: true,
 
-          mode: "resume",
+          mode:
+            "resume",
 
           attempt: {
-            id: Number(
-              attempt.id
-            ),
+            id:
+              Number(
+                attempt.id
+              ),
 
-            userId: Number(
-              attempt.user_id
-            ),
+            userId:
+              Number(
+                attempt.user_id
+              ),
 
-            testId: Number(
-              attempt.test_id
-            ),
+            testId:
+              Number(
+                attempt.test_id
+              ),
 
             attemptNumber:
               Number(
@@ -1641,7 +1449,8 @@ export async function POST(
               ),
 
             score:
-              attempt.score === null
+              attempt.score ===
+              null
                 ? null
                 : Number(
                     attempt.score
@@ -1658,7 +1467,8 @@ export async function POST(
           },
 
           test: {
-            id: testId,
+            id:
+              testId,
 
             title:
               firstDefined(
@@ -1686,6 +1496,29 @@ export async function POST(
                 .trim()
                 .toLowerCase() ===
               "dpp",
+
+            /*
+             * State is returned for frontend awareness,
+             * but does not block resume.
+             */
+
+            isActive:
+              Number(
+                firstDefined(
+                  testRow.is_active,
+                  testRow.isActive,
+                  0
+                )
+              ) === 1,
+
+            isPublished:
+              toBoolean(
+                firstDefined(
+                  testRow.is_published,
+                  testRow.isPublished,
+                  0
+                )
+              ),
           },
         },
         {
@@ -1699,22 +1532,40 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        CHECK EXISTING ACTIVE ATTEMPT
-    ------------------------------------------------------- */
+       
+       IMPORTANT:
+       
+       Existing active attempt takes priority over new-test
+       availability.
+       
+       Therefore:
+       
+       test becomes inactive
+       +
+       student already has in_progress attempt
+       
+       => RESUME IT.
+    ======================================================= */
 
     const activeResult =
       await db.execute({
         sql: `
           SELECT *
           FROM ${config.attemptTable}
+
           WHERE
             user_id = ?
             AND test_id = ?
             AND status = 'in_progress'
-          ORDER BY id DESC
+
+          ORDER BY
+            id DESC
+
           LIMIT 1
         `,
+
         args: [
           userId,
           testId,
@@ -1737,7 +1588,7 @@ export async function POST(
         );
 
       console.log(
-        `[attempt POST] EXISTING ${series}/${testId} attempt=${activeAttempt.id}`
+        `[attempt POST] EXISTING ${series}/${testId} attempt=${activeAttempt.id} -> resume`
       );
 
       return NextResponse.json(
@@ -1746,20 +1597,24 @@ export async function POST(
 
           resumed: true,
 
-          mode: "resume",
+          mode:
+            "resume",
 
           attempt: {
-            id: Number(
-              activeAttempt.id
-            ),
+            id:
+              Number(
+                activeAttempt.id
+              ),
 
-            userId: Number(
-              activeAttempt.user_id
-            ),
+            userId:
+              Number(
+                activeAttempt.user_id
+              ),
 
-            testId: Number(
-              activeAttempt.test_id
-            ),
+            testId:
+              Number(
+                activeAttempt.test_id
+              ),
 
             attemptNumber:
               Number(
@@ -1781,12 +1636,52 @@ export async function POST(
           },
 
           test: {
-            id: testId,
+            id:
+              testId,
 
             title:
               firstDefined(
                 testRow.title,
                 `Test ${testId}`
+              ),
+
+            categorySlug:
+              String(
+                firstDefined(
+                  category?.slug,
+                  ""
+                )
+              )
+                .trim()
+                .toLowerCase(),
+
+            isDpp:
+              String(
+                firstDefined(
+                  category?.slug,
+                  ""
+                )
+              )
+                .trim()
+                .toLowerCase() ===
+              "dpp",
+
+            isActive:
+              Number(
+                firstDefined(
+                  testRow.is_active,
+                  testRow.isActive,
+                  0
+                )
+              ) === 1,
+
+            isPublished:
+              toBoolean(
+                firstDefined(
+                  testRow.is_published,
+                  testRow.isPublished,
+                  0
+                )
               ),
           },
         },
@@ -1796,30 +1691,32 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
-       PHASE 3:
-       PUBLISHED CHECK FOR NEW ATTEMPTS ONLY
+    /* =======================================================
+       PHASE 5
+       
+       NEW ATTEMPT AVAILABILITY
+       
+       This is the FIRST place where the new-attempt flow
+       checks:
+       
+       - series.is_active
+       - category.is_active
+       - test.is_active
+       - test.is_published
+       
+       No active attempt exists at this point.
+    ======================================================= */
 
-       Existing active attempts above are allowed to resume.
+    const availability =
+      await requireTestAvailability({
+        config,
 
-       A brand-new attempt can only be created when the test
-       is currently published.
-    ------------------------------------------------------- */
+        test:
+          testRow,
+      });
 
-    if (
-      Number(
-        firstDefined(
-          testRow.is_published,
-          testRow.isPublished,
-          0
-        )
-      ) !== 1
-    ) {
-      return jsonError(
-        "This test is not currently available.",
-        403,
-        "TEST_NOT_PUBLISHED"
-      );
+    if (!availability.ok) {
+      return availability.response;
     }
 
     /* -------------------------------------------------------
@@ -1831,12 +1728,15 @@ export async function POST(
         sql: `
           SELECT
             COUNT(*) AS count
+
           FROM ${config.attemptTable}
+
           WHERE
             user_id = ?
             AND test_id = ?
             AND status = 'submitted'
         `,
+
         args: [
           userId,
           testId,
@@ -1849,7 +1749,8 @@ export async function POST(
           ?.count || 0
       );
 
-    const maxAttempts = 3;
+    const maxAttempts =
+      3;
 
     if (
       submittedCount >=
@@ -1874,11 +1775,14 @@ export async function POST(
               MAX(attempt_number),
               0
             ) + 1 AS next_attempt_number
+
           FROM ${config.attemptTable}
+
           WHERE
             user_id = ?
             AND test_id = ?
         `,
+
         args: [
           userId,
           testId,
@@ -1889,18 +1793,13 @@ export async function POST(
       Number(
         attemptNumberResult
           .rows?.[0]
-          ?.next_attempt_number || 1
+          ?.next_attempt_number ||
+          1
       );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        TIMER
-
-       DPP:
-       No server deadline.
-
-       Mini / Mock:
-       Fixed timer according to duration.
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const categorySlug =
       String(
@@ -1913,7 +1812,8 @@ export async function POST(
         .toLowerCase();
 
     const isDpp =
-      categorySlug === "dpp";
+      categorySlug ===
+      "dpp";
 
     const durationMinutes =
       Number(
@@ -1924,14 +1824,16 @@ export async function POST(
         )
       );
 
-    let deadlineAt = null;
+    let deadlineAt =
+      null;
 
     if (
       !isDpp &&
       Number.isFinite(
         durationMinutes
       ) &&
-      durationMinutes > 0
+      durationMinutes >
+        0
     ) {
       const deadlineResult =
         await db.execute({
@@ -1942,6 +1844,7 @@ export async function POST(
                 '+' || ? || ' minutes'
               ) AS deadline_at
           `,
+
           args: [
             durationMinutes,
           ],
@@ -1949,12 +1852,13 @@ export async function POST(
 
       deadlineAt =
         deadlineResult.rows?.[0]
-          ?.deadline_at || null;
+          ?.deadline_at ||
+        null;
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        CREATE ATTEMPT
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const insertResult =
       await db.execute({
@@ -1969,6 +1873,7 @@ export async function POST(
             deadline_at,
             created_at
           )
+
           VALUES (
             ?,
             ?,
@@ -1979,6 +1884,7 @@ export async function POST(
             ?,
             CURRENT_TIMESTAMP
           )
+
           RETURNING
             id,
             user_id,
@@ -1997,10 +1903,14 @@ export async function POST(
             event_id,
             deadline_at
         `,
+
         args: [
           userId,
+
           testId,
+
           attemptNumber,
+
           Number(
             firstDefined(
               testRow.total_marks,
@@ -2008,13 +1918,15 @@ export async function POST(
               0
             )
           ),
+
           deadlineAt,
         ],
       });
 
     if (
       !insertResult.rows ||
-      insertResult.rows.length === 0
+      insertResult.rows.length ===
+        0
     ) {
       return jsonError(
         "Failed to create test attempt.",
@@ -2048,9 +1960,9 @@ export async function POST(
       `[attempt POST] NEW ${series}/${testId} attempt=${attempt.id} attemptNumber=${attempt.attempt_number} dpp=${isDpp} deadline=${normalizedDeadlineAt || "none"}`
     );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        FINAL RESPONSE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     return NextResponse.json(
       {
@@ -2058,20 +1970,24 @@ export async function POST(
 
         resumed: false,
 
-        mode: "new",
+        mode:
+          "new",
 
         attempt: {
-          id: Number(
-            attempt.id
-          ),
+          id:
+            Number(
+              attempt.id
+            ),
 
-          userId: Number(
-            attempt.user_id
-          ),
+          userId:
+            Number(
+              attempt.user_id
+            ),
 
-          testId: Number(
-            attempt.test_id
-          ),
+          testId:
+            Number(
+              attempt.test_id
+            ),
 
           attemptNumber:
             Number(
@@ -2102,7 +2018,8 @@ export async function POST(
             ),
 
           score:
-            attempt.score === null
+            attempt.score ===
+            null
               ? null
               : Number(
                   attempt.score
@@ -2119,22 +2036,26 @@ export async function POST(
 
           correctCount:
             Number(
-              attempt.correct_count || 0
+              attempt.correct_count ||
+                0
             ),
 
           wrongCount:
             Number(
-              attempt.wrong_count || 0
+              attempt.wrong_count ||
+                0
             ),
 
           unansweredCount:
             Number(
-              attempt.unanswered_count || 0
+              attempt.unanswered_count ||
+                0
             ),
 
           timeTakenSeconds:
             Number(
-              attempt.time_taken_seconds || 0
+              attempt.time_taken_seconds ||
+                0
             ),
 
           createdAt:
@@ -2143,8 +2064,10 @@ export async function POST(
             ),
 
           eventId:
-            attempt.event_id === null ||
-            attempt.event_id === undefined
+            attempt.event_id ===
+              null ||
+            attempt.event_id ===
+              undefined
               ? null
               : Number(
                   attempt.event_id
@@ -2169,7 +2092,8 @@ export async function POST(
           ),
 
         test: {
-          id: testId,
+          id:
+            testId,
 
           title:
             firstDefined(
@@ -2202,6 +2126,20 @@ export async function POST(
             null,
 
           isDpp,
+
+          /*
+           * New attempt passed all Phase 5
+           * availability checks.
+           */
+
+          isActive:
+            true,
+
+          isPublished:
+            true,
+
+          availabilityValidated:
+            true,
         },
       },
       {

@@ -1,48 +1,20 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/turso";
-import { getCurrentUser } from "@/lib/auth";
 
-/* =========================================================
-   SERIES CONFIG
-========================================================= */
-
-const SERIES_CONFIG = [
-  {
-    slug: "free",
-    name: "Free",
-    seriesId: 1,
-    testTable: "free_tests",
-    attemptTable: "free_test_attempts",
-  },
-  {
-    slug: "asspire",
-    name: "Asspire",
-    seriesId: 2,
-    testTable: "asspire_tests",
-    attemptTable: "asspire_test_attempts",
-  },
-  {
-    slug: "imppetus",
-    name: "Imppetus",
-    seriesId: 3,
-    testTable: "imppetus_tests",
-    attemptTable: "imppetus_test_attempts",
-  },
-  {
-    slug: "spiderman",
-    name: "SpiderMan",
-    seriesId: 4,
-    testTable: "spiderman_tests",
-    attemptTable: "spiderman_test_attempts",
-  },
-];
+import {
+  SERIES_CONFIG,
+  requireAuthenticatedUser,
+} from "@/lib/testSecurity";
 
 /* =========================================================
    HELPERS
 ========================================================= */
 
-function toNumber(value, fallback = 0) {
+function toNumber(
+  value,
+  fallback = 0
+) {
   const number = Number(value);
 
   return Number.isFinite(number)
@@ -55,12 +27,15 @@ function toIsoUtc(value) {
     return null;
   }
 
-  const text = String(value);
+  const text =
+    String(value);
 
   /*
    * Turso / SQLite:
+   *
    * YYYY-MM-DD HH:mm:ss
    */
+
   if (
     text.length === 19 &&
     text[4] === "-" &&
@@ -75,7 +50,8 @@ function toIsoUtc(value) {
     )}Z`;
   }
 
-  const date = new Date(text);
+  const date =
+    new Date(text);
 
   if (
     Number.isNaN(
@@ -88,164 +64,29 @@ function toIsoUtc(value) {
   return date.toISOString();
 }
 
-function jsonError(
-  message,
-  status = 400,
-  code = null
+function getSeriesName(
+  slug
 ) {
-  return NextResponse.json(
-    {
-      error: message,
-      ...(code
-        ? { code }
-        : {}),
-    },
-    {
-      status,
-    }
-  );
-}
-
-/* =========================================================
-   AUTH
-========================================================= */
-
-async function getAuthenticatedUser() {
-  const currentUser =
-    await getCurrentUser();
-
-  if (!currentUser?.id) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Please login to continue.",
-        401,
-        "UNAUTHORIZED"
-      ),
-    };
-  }
-
-  const userId =
-    Number(
-      currentUser.id
-    );
-
-  if (
-    !Number.isInteger(
-      userId
-    ) ||
-    userId <= 0
+  switch (
+    String(slug || "")
+      .trim()
+      .toLowerCase()
   ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Invalid user session.",
-        401,
-        "INVALID_SESSION"
-      ),
-    };
+    case "free":
+      return "Free";
+
+    case "asspire":
+      return "Asspire";
+
+    case "imppetus":
+      return "Imppetus";
+
+    case "spiderman":
+      return "SpiderMan";
+
+    default:
+      return "Test Series";
   }
-
-  const userResult =
-    await db.execute({
-      sql: `
-        SELECT
-          id,
-          username,
-          role,
-          is_active,
-          active_session_id,
-          active_device_id
-        FROM users
-        WHERE id = ?
-        LIMIT 1
-      `,
-      args: [userId],
-    });
-
-  const user =
-    userResult.rows?.[0];
-
-  if (!user) {
-    return {
-      ok: false,
-      response: jsonError(
-        "User account not found.",
-        401,
-        "USER_NOT_FOUND"
-      ),
-    };
-  }
-
-  if (
-    Number(
-      user.is_active
-    ) !== 1
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Your account is inactive.",
-        403,
-        "ACCOUNT_INACTIVE"
-      ),
-    };
-  }
-
-  const jwtSessionId =
-    currentUser.sessionId ??
-    currentUser.session_id ??
-    null;
-
-  const jwtDeviceId =
-    currentUser.deviceId ??
-    currentUser.device_id ??
-    null;
-
-  if (
-    jwtSessionId &&
-    user.active_session_id &&
-    String(
-      jwtSessionId
-    ) !==
-      String(
-        user.active_session_id
-      )
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "Your session is no longer active.",
-        401,
-        "SESSION_REVOKED"
-      ),
-    };
-  }
-
-  if (
-    jwtDeviceId &&
-    user.active_device_id &&
-    String(
-      jwtDeviceId
-    ) !==
-      String(
-        user.active_device_id
-      )
-  ) {
-    return {
-      ok: false,
-      response: jsonError(
-        "This device is no longer active.",
-        401,
-        "DEVICE_REVOKED"
-      ),
-    };
-  }
-
-  return {
-    ok: true,
-    userId,
-  };
 }
 
 /* =========================================================
@@ -259,10 +100,19 @@ export async function GET(
   try {
     /* -------------------------------------------------------
        AUTH
+
+       Centralized in testSecurity.js.
+
+       This validates:
+       - JWT
+       - user existence
+       - account active
+       - active session
+       - active device
     ------------------------------------------------------- */
 
     const auth =
-      await getAuthenticatedUser();
+      await requireAuthenticatedUser();
 
     if (!auth.ok) {
       return auth.response;
@@ -275,13 +125,14 @@ export async function GET(
     /* -------------------------------------------------------
        LIMIT
 
-       History page is intentionally lightweight.
+       History remains intentionally lightweight.
     ------------------------------------------------------- */
 
-    const { searchParams } =
-      new URL(
-        request.url
-      );
+    const {
+      searchParams,
+    } = new URL(
+      request.url
+    );
 
     let limit =
       Number(
@@ -308,69 +159,106 @@ export async function GET(
     /* -------------------------------------------------------
        BUILD UNION
 
-       We only return completed attempts.
-       No in-progress / abandoned attempts.
+       Central SERIES_CONFIG is now the single source for:
+       - series slug
+       - series id
+       - test table
+       - attempt table
     ------------------------------------------------------- */
 
+    const seriesEntries =
+      Object.entries(
+        SERIES_CONFIG
+      );
+
     const unionParts =
-      SERIES_CONFIG.map(
-        (series) => `
-          SELECT
-            ta.id AS attempt_id,
+      seriesEntries.map(
+        (
+          [
+            slug,
+            series,
+          ]
+        ) => {
+          const seriesId =
+            Number(
+              series.seriesId
+            );
 
-            ta.user_id,
+          const seriesName =
+            getSeriesName(
+              slug
+            );
 
-            ta.test_id,
+          /*
+           * Values such as series ID/name/slug are static
+           * application configuration, not user input.
+           */
 
-            ta.attempt_number,
+          return `
+            SELECT
+              ta.id AS attempt_id,
 
-            ta.status,
+              ta.user_id,
 
-            ta.score,
+              ta.test_id,
 
-            ta.total_marks,
+              ta.attempt_number,
 
-            ta.time_taken_seconds,
+              ta.status,
 
-            ta.submitted_at,
+              ta.score,
 
-            ta.created_at,
+              ta.total_marks,
 
-            t.title AS test_title,
+              ta.time_taken_seconds,
 
-            t.slug AS test_slug,
+              ta.submitted_at,
 
-            ${series.seriesId} AS series_id,
+              ta.created_at,
 
-            '${series.slug}' AS series_slug,
+              t.title AS test_title,
 
-            '${series.name}' AS series_name
+              t.slug AS test_slug,
 
-          FROM ${series.attemptTable} ta
+              ${seriesId} AS series_id,
 
-          INNER JOIN ${series.testTable} t
-            ON t.id = ta.test_id
+              '${slug}' AS series_slug,
 
-          WHERE
-            ta.user_id = ?
-            AND ta.status IN (
-              'submitted',
-              'auto_submitted'
-            )
-        `
+              '${seriesName.replace(
+                /'/g,
+                "''"
+              )}' AS series_name
+
+            FROM ${series.attemptTable} ta
+
+            INNER JOIN ${series.testTable} t
+              ON t.id = ta.test_id
+
+            WHERE
+              ta.user_id = ?
+
+              AND ta.status IN (
+                'submitted',
+                'auto_submitted'
+              )
+          `;
+        }
       );
 
-    const args = [];
+    /* -------------------------------------------------------
+       USER ID ARGUMENT
+       
+       One argument per UNION branch.
+    ------------------------------------------------------- */
 
-    for (
-      let index = 0;
-      index < SERIES_CONFIG.length;
-      index += 1
-    ) {
-      args.push(
-        userId
+    const userArgs =
+      seriesEntries.map(
+        () => userId
       );
-    }
+
+    /* -------------------------------------------------------
+       HISTORY QUERY
+    ------------------------------------------------------- */
 
     const historyResult =
       await db.execute({
@@ -387,12 +275,14 @@ export async function GET(
               history.submitted_at,
               history.created_at
             ) DESC,
+
             history.attempt_id DESC
 
           LIMIT ?
         `,
+
         args: [
-          ...args,
+          ...userArgs,
           limit,
         ],
       });
@@ -489,21 +379,31 @@ export async function GET(
         })
       );
 
+    /* -------------------------------------------------------
+       RESPONSE
+    ------------------------------------------------------- */
+
     return NextResponse.json(
       {
         success: true,
+
         history,
+
         count:
           history.length,
       },
       {
         status: 200,
+
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
+
           Pragma:
             "no-cache",
-          Expires: "0",
+
+          Expires:
+            "0",
         },
       }
     );

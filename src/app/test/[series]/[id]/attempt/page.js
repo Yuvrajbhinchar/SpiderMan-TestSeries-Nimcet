@@ -7,11 +7,13 @@ import {
   useRef,
   useState,
 } from "react";
+
 import {
   useParams,
   useRouter,
   useSearchParams,
 } from "next/navigation";
+
 import {
   AlertTriangle,
   ChevronLeft,
@@ -20,7 +22,9 @@ import {
   Flag,
   X,
 } from "lucide-react";
+
 import { toast } from "sonner";
+
 import SpiderManLoader from "@/components/common/SpiderManLoader";
 
 const STATUS = {
@@ -31,55 +35,87 @@ const STATUS = {
   ANSWERED_REVIEW: "answered_review",
 };
 
-function createQuestionState(questions, savedAnswers) {
+function createQuestionState(
+  questions,
+  savedAnswers
+) {
   const savedMap = new Map(
-    (Array.isArray(savedAnswers) ? savedAnswers : []).map(
-      (item) => [Number(item.questionId), item]
+    (
+      Array.isArray(savedAnswers)
+        ? savedAnswers
+        : []
+    ).map((item) => [
+      Number(item.questionId),
+      item,
+    ])
+  );
+
+  return questions.reduce(
+    (acc, question, index) => {
+      const saved =
+        savedMap.get(
+          Number(question.id)
+        );
+
+      const selectedIndex =
+        saved?.selectedOptionId !=
+        null
+          ? question.options.findIndex(
+              (option) =>
+                Number(option.id) ===
+                Number(
+                  saved.selectedOptionId
+                )
+            )
+          : null;
+
+      acc[Number(question.id)] = {
+        visited: saved
+          ? Boolean(saved.visited)
+          : index === 0,
+
+        selectedOption:
+          selectedIndex >= 0
+            ? selectedIndex
+            : null,
+
+        markedForReview: saved
+          ? Boolean(
+              saved.markedForReview
+            )
+          : false,
+
+        timeSpentSeconds:
+          Number(
+            saved?.timeSpentSeconds ||
+              0
+          ),
+      };
+
+      return acc;
+    },
+    {}
+  );
+}
+
+function formatTime(
+  totalSeconds
+) {
+  const total = Math.max(
+    0,
+    Math.floor(
+      Number(totalSeconds) || 0
     )
   );
 
-  return questions.reduce((acc, question, index) => {
-    const saved = savedMap.get(Number(question.id));
-
-    const selectedIndex =
-      saved?.selectedOptionId != null
-        ? question.options.findIndex(
-            (option) =>
-              Number(option.id) ===
-              Number(saved.selectedOptionId)
-          )
-        : null;
-
-    acc[Number(question.id)] = {
-      visited: saved
-        ? Boolean(saved.visited)
-        : index === 0,
-      selectedOption:
-        selectedIndex >= 0
-          ? selectedIndex
-          : null,
-      markedForReview: saved
-        ? Boolean(saved.markedForReview)
-        : false,
-      timeSpentSeconds: Number(
-        saved?.timeSpentSeconds || 0
-      ),
-    };
-
-    return acc;
-  }, {});
-}
-
-function formatTime(totalSeconds) {
-  const total = Math.max(
-    0,
-    Math.floor(Number(totalSeconds) || 0)
+  const hours = Math.floor(
+    total / 3600
   );
 
-  const hours = Math.floor(total / 3600);
   const minutes = Math.floor(
     (total % 3600) / 60
   );
+
   const seconds = total % 60;
 
   return [hours, minutes, seconds]
@@ -105,7 +141,9 @@ function getStatus(item) {
     return STATUS.REVIEW;
   }
 
-  if (item.selectedOption !== null) {
+  if (
+    item.selectedOption !== null
+  ) {
     return STATUS.ANSWERED;
   }
 
@@ -124,7 +162,9 @@ function PaletteIcon({
     ? "z-10 scale-[1.05] shadow-[0_0_0_2px_white,0_0_0_4px_#2563eb]"
     : "";
 
-  if (status === STATUS.NOT_VISITED) {
+  if (
+    status === STATUS.NOT_VISITED
+  ) {
     return (
       <div
         className={`${base} rounded-[4px] border border-[#94a3b8] bg-gradient-to-b from-white to-[#e1e1e1] text-[#1e293b] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_1px_2px_rgba(0,0,0,0.1)] ${currentClass}`}
@@ -134,7 +174,9 @@ function PaletteIcon({
     );
   }
 
-  if (status === STATUS.NOT_ANSWERED) {
+  if (
+    status === STATUS.NOT_ANSWERED
+  ) {
     return (
       <div
         className={`${base} rounded-[2px] bg-gradient-to-b from-[#e25822] to-[#b42711] text-white [clip-path:polygon(0%_0%,100%_0%,100%_75%,50%_100%,0%_75%)] ${currentClass}`}
@@ -144,7 +186,9 @@ function PaletteIcon({
     );
   }
 
-  if (status === STATUS.ANSWERED) {
+  if (
+    status === STATUS.ANSWERED
+  ) {
     return (
       <div
         className={`${base} rounded-[2px] bg-gradient-to-b from-[#7fc142] to-[#478e17] text-white [clip-path:polygon(50%_0%,100%_25%,100%_100%,0%_100%,0%_25%)] ${currentClass}`}
@@ -154,7 +198,9 @@ function PaletteIcon({
     );
   }
 
-  if (status === STATUS.REVIEW) {
+  if (
+    status === STATUS.REVIEW
+  ) {
     return (
       <div
         className={`${base} rounded-full bg-gradient-to-b from-[#8a5bbb] to-[#5a3782] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_1px_2px_rgba(0,0,0,0.2)] ${currentClass}`}
@@ -177,10 +223,15 @@ function PaletteIcon({
   );
 }
 
-function LegendIcon({ type, count }) {
+function LegendIcon({
+  type,
+  count,
+}) {
   const value = Number(count || 0);
 
-  if (type === STATUS.ANSWERED) {
+  if (
+    type === STATUS.ANSWERED
+  ) {
     return (
       <div className="flex h-[30px] w-[34px] items-center justify-center rounded-[2px] bg-gradient-to-b from-[#7fc142] to-[#478e17] text-[11px] font-bold text-white [clip-path:polygon(50%_0%,100%_25%,100%_100%,0%_100%,0%_25%)]">
         {value}
@@ -188,7 +239,9 @@ function LegendIcon({ type, count }) {
     );
   }
 
-  if (type === STATUS.NOT_ANSWERED) {
+  if (
+    type === STATUS.NOT_ANSWERED
+  ) {
     return (
       <div className="flex h-[30px] w-[34px] items-center justify-center rounded-[2px] bg-gradient-to-b from-[#e25822] to-[#b42711] text-[11px] font-bold text-white [clip-path:polygon(0%_0%,100%_0%,100%_75%,50%_100%,0%_75%)]">
         {value}
@@ -196,7 +249,9 @@ function LegendIcon({ type, count }) {
     );
   }
 
-  if (type === STATUS.NOT_VISITED) {
+  if (
+    type === STATUS.NOT_VISITED
+  ) {
     return (
       <div className="flex h-[28px] w-[32px] items-center justify-center rounded-[4px] border border-[#94a3b8] bg-gradient-to-b from-white to-[#e1e1e1] text-[11px] font-bold text-[#1e293b]">
         {value}
@@ -204,7 +259,9 @@ function LegendIcon({ type, count }) {
     );
   }
 
-  if (type === STATUS.REVIEW) {
+  if (
+    type === STATUS.REVIEW
+  ) {
     return (
       <div className="flex h-[32px] w-[32px] items-center justify-center rounded-full bg-gradient-to-b from-[#8a5bbb] to-[#5a3782] text-[11px] font-bold text-white">
         {value}
@@ -223,13 +280,6 @@ function LegendIcon({ type, count }) {
   );
 }
 
-function isSectionTimed(sections) {
-  return sections.some(
-    (section) =>
-      Number(section.durationMinutes || 0) > 0
-  );
-}
-
 function getTimestamp(value) {
   if (!value) {
     return NaN;
@@ -239,7 +289,8 @@ function getTimestamp(value) {
     return value.getTime();
   }
 
-  const text = String(value).trim();
+  const text =
+    String(value).trim();
 
   if (!text) {
     return NaN;
@@ -254,7 +305,10 @@ function getTimestamp(value) {
     text[16] === ":"
   ) {
     return new Date(
-      `${text.replace(" ", "T")}Z`
+      `${text.replace(
+        " ",
+        "T"
+      )}Z`
     ).getTime();
   }
 
@@ -262,65 +316,116 @@ function getTimestamp(value) {
 }
 
 export default function AttemptPage() {
-  const { series, id } = useParams();
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const {
+    series,
+    id,
+  } = useParams();
 
-  const attemptId = Number(
-    searchParams.get("attemptId") || 0
-  );
+  const router =
+    useRouter();
 
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
+  const searchParams =
+    useSearchParams();
 
-  const [test, setTest] = useState(null);
-  const [attempt, setAttempt] = useState(null);
-  const [sections, setSections] = useState([]);
-  const [questions, setQuestions] = useState([]);
-  const [questionsState, setQuestionsState] =
-    useState({});
+  const attemptId =
+    Number(
+      searchParams.get(
+        "attemptId"
+      ) || 0
+    );
 
-  const [currentQuestionId, setCurrentQuestionId] =
-    useState(null);
-
-  const [activeSectionIndex, setActiveSectionIndex] =
-    useState(0);
-
-  const [remainingSeconds, setRemainingSeconds] =
-    useState(0);
-
-  const [elapsedSeconds, setElapsedSeconds] =
-    useState(0);
-
-  const [showSubmitModal, setShowSubmitModal] =
-    useState(false);
-
-  const [submitting, setSubmitting] =
-    useState(false);
-
-  const [mobilePalette, setMobilePalette] =
-    useState(false);
-
-  const [desktopPalette, setDesktopPalette] =
+  const [loading, setLoading] =
     useState(true);
 
-  const [fullscreenWarnings, setFullscreenWarnings] =
-    useState(0);
+  const [loadError, setLoadError] =
+    useState("");
+
+  const [test, setTest] =
+    useState(null);
+
+  const [attempt, setAttempt] =
+    useState(null);
+
+  const [sections, setSections] =
+    useState([]);
+
+  const [questions, setQuestions] =
+    useState([]);
+
+  const [
+    questionsState,
+    setQuestionsState,
+  ] = useState({});
+
+  const [
+    currentQuestionId,
+    setCurrentQuestionId,
+  ] = useState(null);
+
+  const [
+    activeSectionIndex,
+    setActiveSectionIndex,
+  ] = useState(0);
+
+  const [
+    remainingSeconds,
+    setRemainingSeconds,
+  ] = useState(0);
+
+  const [
+    elapsedSeconds,
+    setElapsedSeconds,
+  ] = useState(0);
+
+  const [
+    showSubmitModal,
+    setShowSubmitModal,
+  ] = useState(false);
+
+  const [
+    submitting,
+    setSubmitting,
+  ] = useState(false);
+
+  const [
+    mobilePalette,
+    setMobilePalette,
+  ] = useState(false);
+
+  const [
+    desktopPalette,
+    setDesktopPalette,
+  ] = useState(true);
+
+  const [
+    fullscreenWarnings,
+    setFullscreenWarnings,
+  ] = useState(0);
 
   const [
     showFullscreenWarning,
     setShowFullscreenWarning,
   ] = useState(false);
 
-  const [checkpointBusy, setCheckpointBusy] =
-    useState(false);
+  const [
+    checkpointBusy,
+    setCheckpointBusy,
+  ] = useState(false);
 
-  const stateRef = useRef({});
-  const attemptRef = useRef(null);
-  const snapshotRef = useRef({});
-  const submittedRef = useRef(false);
+  const stateRef =
+    useRef({});
 
-  const saveTimerRef = useRef(null);
+  const attemptRef =
+    useRef(null);
+
+  const snapshotRef =
+    useRef({});
+
+  const submittedRef =
+    useRef(false);
+
+  const saveTimerRef =
+    useRef(null);
 
   const fullscreenWarningsRef =
     useRef(0);
@@ -350,24 +455,32 @@ export default function AttemptPage() {
       attempt;
   }, [attempt]);
 
-  const timedSections = useMemo(
-    () =>
-      sections.filter(
-        (section) =>
-          Number(
-            section.durationMinutes || 0
-          ) > 0
-      ),
-    [sections]
-  );
+  const timedSections =
+    useMemo(
+      () =>
+        sections.filter(
+          (section) =>
+            Number(
+              section.durationMinutes ||
+                0
+            ) > 0
+        ),
+      [sections]
+    );
 
   const sectional =
-    Boolean(test?.sectional) &&
-    timedSections.length > 0;
+    Boolean(
+      test?.sectional
+    ) &&
+    timedSections.length >
+      0;
 
   const fixedTimer =
     !sectional &&
-    Number(test?.durationMinutes || 0) > 0;
+    Number(
+      test?.durationMinutes ||
+        0
+    ) > 0;
 
   const isDpp =
     String(
@@ -376,90 +489,191 @@ export default function AttemptPage() {
         ""
     )
       .trim()
-      .toLowerCase() === "dpp" ||
+      .toLowerCase() ===
+      "dpp" ||
     Boolean(test?.isDpp);
 
   const currentQuestion =
     questions.find(
       (question) =>
-        Number(question.id) ===
-        Number(currentQuestionId)
+        Number(
+          question.id
+        ) ===
+        Number(
+          currentQuestionId
+        )
     ) || null;
 
   const activeSection =
-    timedSections[activeSectionIndex] ||
+    timedSections[
+      activeSectionIndex
+    ] ||
     timedSections[0] ||
     null;
 
-  const sectionQuestions = useMemo(() => {
-    if (
-      !sectional ||
-      !activeSection
-    ) {
+  const sectionQuestions =
+    useMemo(() => {
+      if (
+        !sectional ||
+        !activeSection
+      ) {
+        return questions;
+      }
+
+      const direct =
+        questions.filter(
+          (question) =>
+            Number(
+              question.sectionId
+            ) ===
+            Number(
+              activeSection.id
+            )
+        );
+
+      if (
+        direct.length > 0
+      ) {
+        return direct;
+      }
+
       return questions;
-    }
-
-    const direct =
-      questions.filter(
-        (question) =>
-          Number(question.sectionId) ===
-          Number(activeSection.id)
-      );
-
-    if (direct.length > 0) {
-      return direct;
-    }
-
-    return questions;
-  }, [
-    questions,
-    sectional,
-    activeSection,
-  ]);
+    }, [
+      questions,
+      sectional,
+      activeSection,
+    ]);
 
   const currentSectionQuestionIndex =
     Math.max(
       0,
       sectionQuestions.findIndex(
         (question) =>
-          Number(question.id) ===
-          Number(currentQuestionId)
+          Number(
+            question.id
+          ) ===
+          Number(
+            currentQuestionId
+          )
       )
     );
 
-  const allowedQuestionIds = useMemo(
-    () =>
-      new Set(
-        sectionQuestions.map(
+  /*
+  |--------------------------------------------------------------------------
+  | PHASE 1
+  |
+  | Current question is the LAST question of the current section?
+  |--------------------------------------------------------------------------
+  */
+
+  const isLastQuestionOfCurrentSection =
+    Boolean(
+      currentQuestion
+    ) &&
+    sectionQuestions.length >
+      0 &&
+    Number(
+      sectionQuestions[
+        sectionQuestions.length - 1
+      ]?.id
+    ) ===
+      Number(
+        currentQuestionId
+      );
+
+  /*
+  |--------------------------------------------------------------------------
+  | PHASE 1
+  |
+  | Current question is the LAST question of the ENTIRE TEST?
+  |--------------------------------------------------------------------------
+  |
+  | Only this question is allowed to show SUBMIT TEST
+  | in the bottom navigation.
+  |--------------------------------------------------------------------------
+  */
+
+  const isLastQuestionOfEntireTest =
+    Boolean(
+      currentQuestion
+    ) &&
+    questions.length > 0 &&
+    Number(
+      questions[
+        questions.length - 1
+      ]?.id
+    ) ===
+      Number(
+        currentQuestionId
+      );
+
+  /*
+  |--------------------------------------------------------------------------
+  | PHASE 1
+  |
+  | The footer Next button is disabled when:
+  |
+  | 1. Current question is last of current section
+  | 2. Current section still has time remaining
+  | 3. There is another section after it
+  |
+  | This prevents opening the next section early.
+  |--------------------------------------------------------------------------
+  */
+
+  const currentSectionHasNextSection =
+    sectional &&
+    activeSectionIndex <
+      timedSections.length - 1;
+
+  const sectionBoundaryLocked =
+    isLastQuestionOfCurrentSection &&
+    currentSectionHasNextSection;
+
+  const allowedQuestionIds =
+    useMemo(
+      () =>
+        new Set(
+          sectionQuestions.map(
+            (question) =>
+              Number(
+                question.id
+              )
+          )
+        ),
+      [sectionQuestions]
+    );
+
+  const answeredCount =
+    useMemo(
+      () =>
+        questions.filter(
           (question) =>
-            Number(question.id)
-        )
-      ),
-    [sectionQuestions]
-  );
+            questionsState[
+              question.id
+            ]?.selectedOption !==
+            null
+        ).length,
+      [
+        questions,
+        questionsState,
+      ]
+    );
 
-  const answeredCount = useMemo(
-    () =>
-      questions.filter(
-        (question) =>
-          questionsState[
-            question.id
-          ]?.selectedOption !==
-          null
-      ).length,
-    [questions, questionsState]
-  );
-
-  const markedCount = useMemo(
-    () =>
-      questions.filter(
-        (question) =>
-          questionsState[
-            question.id
-          ]?.markedForReview
-      ).length,
-    [questions, questionsState]
-  );
+  const markedCount =
+    useMemo(
+      () =>
+        questions.filter(
+          (question) =>
+            questionsState[
+              question.id
+            ]?.markedForReview
+        ).length,
+      [
+        questions,
+        questionsState,
+      ]
+    );
 
   const answeredReviewCount =
     useMemo(
@@ -478,7 +692,10 @@ export default function AttemptPage() {
             );
           }
         ).length,
-      [questions, questionsState]
+      [
+        questions,
+        questionsState,
+      ]
     );
 
   const reviewOnlyCount =
@@ -488,16 +705,20 @@ export default function AttemptPage() {
         answeredReviewCount
     );
 
-  const visitedCount = useMemo(
-    () =>
-      questions.filter(
-        (question) =>
-          questionsState[
-            question.id
-          ]?.visited
-      ).length,
-    [questions, questionsState]
-  );
+  const visitedCount =
+    useMemo(
+      () =>
+        questions.filter(
+          (question) =>
+            questionsState[
+              question.id
+            ]?.visited
+        ).length,
+      [
+        questions,
+        questionsState,
+      ]
+    );
 
   const notVisitedCount =
     Math.max(
@@ -514,24 +735,40 @@ export default function AttemptPage() {
         notVisitedCount
     );
 
+  /*
+  |--------------------------------------------------------------------------
+  | GO TO QUESTION
+  |--------------------------------------------------------------------------
+  */
+
   const goToQuestion =
     useCallback(
       (questionId) => {
         const question =
           questions.find(
             (item) =>
-              Number(item.id) ===
-              Number(questionId)
+              Number(
+                item.id
+              ) ===
+              Number(
+                questionId
+              )
           );
 
         if (!question) {
           return;
         }
 
+        /*
+         * Never allow a question outside the currently unlocked
+         * section in a sectional test.
+         */
         if (
           sectional &&
           !allowedQuestionIds.has(
-            Number(question.id)
+            Number(
+              question.id
+            )
           )
         ) {
           return;
@@ -557,12 +794,15 @@ export default function AttemptPage() {
                 visited:
                   false,
               }),
-              visited: true,
+              visited:
+                true,
             },
           })
         );
 
-        setMobilePalette(false);
+        setMobilePalette(
+          false
+        );
       },
       [
         questions,
@@ -570,6 +810,12 @@ export default function AttemptPage() {
         allowedQuestionIds,
       ]
     );
+
+  /*
+  |--------------------------------------------------------------------------
+  | CHECKPOINT
+  |--------------------------------------------------------------------------
+  */
 
   const getChangedAnswers =
     useCallback(() => {
@@ -585,29 +831,37 @@ export default function AttemptPage() {
         const question of questions
       ) {
         const item =
-          current[question.id];
+          current[
+            question.id
+          ];
 
         if (!item) {
           continue;
         }
 
         const selectedOptionId =
-          item.selectedOption == null
+          item.selectedOption ==
+          null
             ? null
             : Number(
-                question.options?.[
+                question
+                  .options?.[
                   item.selectedOption
                 ]?.id
               );
 
         const payload = {
           questionId:
-            Number(question.id),
+            Number(
+              question.id
+            ),
 
           selectedOptionId,
 
           visited:
-            Boolean(item.visited),
+            Boolean(
+              item.visited
+            ),
 
           markedForReview:
             Boolean(
@@ -660,7 +914,8 @@ export default function AttemptPage() {
         if (
           !attemptRef.current?.id ||
           submittedRef.current ||
-          questions.length === 0
+          questions.length ===
+            0
         ) {
           return true;
         }
@@ -669,7 +924,8 @@ export default function AttemptPage() {
           getChangedAnswers();
 
         if (
-          changed.length === 0 &&
+          changed.length ===
+            0 &&
           !force
         ) {
           return true;
@@ -708,16 +964,21 @@ export default function AttemptPage() {
                   "include",
 
                 body: JSON.stringify({
-                  attemptId: Number(
-                    attemptRef.current.id
-                  ),
+                  attemptId:
+                    Number(
+                      attemptRef
+                        .current
+                        .id
+                    ),
 
-                  answers: changed,
+                  answers:
+                    changed,
                 }),
 
                 ...(keepalive
                   ? {
-                      keepalive: true,
+                      keepalive:
+                        true,
                     }
                   : {}),
               }
@@ -732,7 +993,8 @@ export default function AttemptPage() {
 
           if (!response.ok) {
             if (
-              response.status === 401 ||
+              response.status ===
+                401 ||
               data?.code ===
                 "SESSION_REVOKED"
             ) {
@@ -781,6 +1043,12 @@ export default function AttemptPage() {
       ]
     );
 
+  /*
+  |--------------------------------------------------------------------------
+  | SUBMIT
+  |--------------------------------------------------------------------------
+  */
+
   const submitTest =
     useCallback(
       async (auto = false) => {
@@ -825,9 +1093,12 @@ export default function AttemptPage() {
                   "include",
 
                 body: JSON.stringify({
-                  attemptId: Number(
-                    attemptRef.current.id
-                  ),
+                  attemptId:
+                    Number(
+                      attemptRef
+                        .current
+                        .id
+                    ),
                 }),
               }
             );
@@ -840,7 +1111,8 @@ export default function AttemptPage() {
               );
 
           if (
-            response.status === 401 ||
+            response.status ===
+              401 ||
             data?.code ===
               "SESSION_REVOKED"
           ) {
@@ -919,7 +1191,9 @@ export default function AttemptPage() {
               "Unable to submit test."
           );
         } finally {
-          setSubmitting(false);
+          setSubmitting(
+            false
+          );
         }
       },
       [
@@ -936,6 +1210,12 @@ export default function AttemptPage() {
       submitTest;
   }, [submitTest]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | LOAD ATTEMPT
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     if (
       !id ||
@@ -947,342 +1227,346 @@ export default function AttemptPage() {
 
     let cancelled = false;
 
-    const load = async () => {
-      try {
-        setLoading(true);
-        setLoadError("");
+    const load =
+      async () => {
+        try {
+          setLoading(true);
+          setLoadError("");
 
-        const response =
-          await fetch(
-            `/api/test/${encodeURIComponent(
-              String(series)
-            )}/${encodeURIComponent(
-              String(id)
-            )}/attempt?attemptId=${encodeURIComponent(
-              String(attemptId)
-            )}`,
-            {
-              method: "GET",
-              credentials: "include",
-              cache: "no-store",
+          const response =
+            await fetch(
+              `/api/test/${encodeURIComponent(
+                String(series)
+              )}/${encodeURIComponent(
+                String(id)
+              )}/attempt?attemptId=${encodeURIComponent(
+                String(attemptId)
+              )}`,
+              {
+                method: "GET",
+                credentials:
+                  "include",
+                cache: "no-store",
+              }
+            );
+
+          const data =
+            await response
+              .json()
+              .catch(
+                () => ({})
+              );
+
+          if (!response.ok) {
+            if (
+              response.status ===
+                401 ||
+              data?.code ===
+                "SESSION_REVOKED"
+            ) {
+              router.replace(
+                `/auth/login?next=${encodeURIComponent(
+                  window.location.pathname +
+                    window.location.search
+                )}`
+              );
+
+              return;
             }
-          );
 
-        const data =
-          await response
-            .json()
-            .catch(
-              () => ({})
+            throw new Error(
+              data?.error ||
+                "Unable to load test."
             );
+          }
 
-        if (!response.ok) {
-          if (
-            response.status === 401 ||
-            data?.code ===
-              "SESSION_REVOKED"
-          ) {
-            router.replace(
-              `/auth/login?next=${encodeURIComponent(
-                window.location.pathname +
-                  window.location.search
-              )}`
-            );
-
+          if (cancelled) {
             return;
           }
 
-          throw new Error(
-            data?.error ||
-              "Unable to load test."
-          );
-        }
+          const loadedTest =
+            data?.test ||
+            null;
 
-        if (cancelled) {
-          return;
-        }
+          const loadedAttempt =
+            data?.attempt ||
+            null;
 
-        const loadedTest =
-          data?.test || null;
+          const loadedSections =
+            Array.isArray(
+              data?.sections
+            )
+              ? data.sections
+              : [];
 
-        const loadedAttempt =
-          data?.attempt ||
-          null;
+          const loadedQuestions =
+            Array.isArray(
+              data?.questions
+            )
+              ? data.questions
+              : [];
 
-        const loadedSections =
-          Array.isArray(
-            data?.sections
-          )
-            ? data.sections
-            : [];
+          if (!loadedTest) {
+            throw new Error(
+              "Test data is missing."
+            );
+          }
 
-        const loadedQuestions =
-          Array.isArray(
-            data?.questions
-          )
-            ? data.questions
-            : [];
+          if (
+            !loadedAttempt?.id
+          ) {
+            throw new Error(
+              "Attempt data is missing."
+            );
+          }
 
-        if (!loadedTest) {
-          throw new Error(
-            "Test data is missing."
-          );
-        }
+          if (
+            !loadedQuestions.length
+          ) {
+            throw new Error(
+              "No questions were found for this test."
+            );
+          }
 
-        if (!loadedAttempt?.id) {
-          throw new Error(
-            "Attempt data is missing."
-          );
-        }
+          const normalizedSections =
+            loadedSections.map(
+              (section) => ({
+                ...section,
 
-        if (
-          !loadedQuestions.length
-        ) {
-          throw new Error(
-            "No questions were found for this test."
-          );
-        }
-
-        const normalizedSections =
-          loadedSections.map(
-            (section) => ({
-              ...section,
-
-              id: Number(
-                section.id ??
-                  section.sectionId
-              ),
-
-              sectionName:
-                section.sectionName ??
-                section.section_name ??
-                "Section",
-
-              durationMinutes:
-                Number(
-                  section.durationMinutes ??
-                    section.duration_minutes ??
-                    0
+                id: Number(
+                  section.id ??
+                    section.sectionId
                 ),
 
-              questionCount:
-                Number(
-                  section.questionCount ??
-                    section.question_count ??
-                    0
-                ),
+                sectionName:
+                  section.sectionName ??
+                  section.section_name ??
+                  "Section",
 
-              isSequential:
-                Boolean(
-                  section.isSequential ??
-                    section.is_sequential ??
-                    false
-                ),
-
-              timerGroup:
-                section.timerGroup ??
-                section.timer_group ??
-                null,
-            })
-          );
-
-        const normalizedQuestions =
-          loadedQuestions.map(
-            (question) => ({
-              ...question,
-
-              id: Number(
-                question.id ??
-                  question.questionId
-              ),
-
-              sectionId:
-                question.sectionId !=
-                null
-                  ? Number(
-                      question.sectionId
-                    )
-                  : question.section_id !=
-                    null
-                  ? Number(
-                      question.section_id
-                    )
-                  : null,
-
-              questionText:
-                question.questionText ??
-                question.question_text ??
-                "",
-
-              /*
-               * ------------------------------------------------------
-               * STEP 3:
-               * Question image support.
-               *
-               * NULL/empty means the existing text-only UI remains
-               * exactly the same.
-               * ------------------------------------------------------
-               */
-              questionImageUrl:
-                question.questionImageUrl ??
-                question.question_image_url ??
-                null,
-
-              marks:
-                Number(
-                  question.marks ??
-                    0
-                ),
-
-              negativeMarks:
-                Number(
-                  question.negativeMarks ??
-                    question.negative_marks ??
-                    0
-                ),
-
-              options: (
-                Array.isArray(
-                  question.options
-                )
-                  ? question.options
-                  : []
-              ).map(
-                (option) => ({
-                  ...option,
-
-                  id: Number(
-                    option.id
+                durationMinutes:
+                  Number(
+                    section.durationMinutes ??
+                      section.duration_minutes ??
+                      0
                   ),
 
-                  label:
-                    option.label ??
-                    option.optionLabel ??
-                    option.option_label ??
-                    "",
+                questionCount:
+                  Number(
+                    section.questionCount ??
+                      section.question_count ??
+                      0
+                  ),
 
-                  text:
-                    option.text ??
-                    option.optionText ??
-                    option.option_text ??
-                    "",
-                })
-              ),
-            })
-          );
+                isSequential:
+                  Boolean(
+                    section.isSequential ??
+                      section.is_sequential ??
+                      false
+                  ),
 
-        const restored =
-          createQuestionState(
-            normalizedQuestions,
-            data?.savedAnswers ??
-              data?.saved_answers ??
-              []
-          );
-
-        try {
-          const backup =
-            localStorage.getItem(
-              `spiderman_attempt_${loadedAttempt.id}`
+                timerGroup:
+                  section.timerGroup ??
+                  section.timer_group ??
+                  null,
+              })
             );
 
-          if (backup) {
-            const parsed =
-              JSON.parse(
-                backup
+          const normalizedQuestions =
+            loadedQuestions.map(
+              (question) => ({
+                ...question,
+
+                id: Number(
+                  question.id ??
+                    question.questionId
+                ),
+
+                sectionId:
+                  question.sectionId !=
+                  null
+                    ? Number(
+                        question.sectionId
+                      )
+                    : question.section_id !=
+                      null
+                    ? Number(
+                        question.section_id
+                      )
+                    : null,
+
+                questionText:
+                  question.questionText ??
+                  question.question_text ??
+                  "",
+
+                /*
+                 * Question image support.
+                 */
+                questionImageUrl:
+                  question.questionImageUrl ??
+                  question.question_image_url ??
+                  null,
+
+                marks:
+                  Number(
+                    question.marks ??
+                      0
+                  ),
+
+                negativeMarks:
+                  Number(
+                    question.negativeMarks ??
+                      question.negative_marks ??
+                      0
+                  ),
+
+                options: (
+                  Array.isArray(
+                    question.options
+                  )
+                    ? question.options
+                    : []
+                ).map(
+                  (option) => ({
+                    ...option,
+
+                    id: Number(
+                      option.id
+                    ),
+
+                    label:
+                      option.label ??
+                      option.optionLabel ??
+                      option.option_label ??
+                      "",
+
+                    text:
+                      option.text ??
+                      option.optionText ??
+                      option.option_text ??
+                      "",
+                  })
+                ),
+              })
+            );
+
+          const restored =
+            createQuestionState(
+              normalizedQuestions,
+              data?.savedAnswers ??
+                data?.saved_answers ??
+                []
+            );
+
+          /*
+           * Restore local backup.
+           */
+
+          try {
+            const backup =
+              localStorage.getItem(
+                `spiderman_attempt_${loadedAttempt.id}`
               );
 
-            if (
-              parsed?.questionsState &&
-              typeof parsed.questionsState ===
-                "object"
-            ) {
-              Object.entries(
-                parsed.questionsState
-              ).forEach(
-                ([
-                  questionId,
-                  item,
-                ]) => {
-                  restored[
-                    questionId
-                  ] = {
-                    ...(restored[
+            if (backup) {
+              const parsed =
+                JSON.parse(
+                  backup
+                );
+
+              if (
+                parsed?.questionsState &&
+                typeof parsed.questionsState ===
+                  "object"
+              ) {
+                Object.entries(
+                  parsed.questionsState
+                ).forEach(
+                  ([
+                    questionId,
+                    item,
+                  ]) => {
+                    restored[
                       questionId
-                    ] || {}),
-                    ...item,
-                  };
-                }
-              );
+                    ] = {
+                      ...(restored[
+                        questionId
+                      ] || {}),
+                      ...item,
+                    };
+                  }
+                );
+              }
             }
+          } catch {}
+
+          if (cancelled) {
+            return;
           }
-        } catch {}
 
-        if (cancelled) {
-          return;
-        }
+          stateRef.current =
+            restored;
 
-        stateRef.current =
-          restored;
+          attemptRef.current =
+            loadedAttempt;
 
-        attemptRef.current =
-          loadedAttempt;
+          snapshotRef.current =
+            {};
 
-        snapshotRef.current =
-          {};
-
-        setTest(
-          loadedTest
-        );
-
-        setAttempt(
-          loadedAttempt
-        );
-
-        setSections(
-          normalizedSections
-        );
-
-        setQuestions(
-          normalizedQuestions
-        );
-
-        setQuestionsState(
-          restored
-        );
-
-        const firstQuestion =
-          normalizedQuestions.find(
-            (question) =>
-              restored[
-                question.id
-              ]?.visited
-          ) ||
-          normalizedQuestions[0];
-
-        setCurrentQuestionId(
-          firstQuestion
-            ? Number(
-                firstQuestion.id
-              )
-            : null
-        );
-      } catch (error) {
-        console.error(
-          "Attempt load error:",
-          error
-        );
-
-        if (!cancelled) {
-          setLoadError(
-            error?.message ||
-              "Unable to load test."
+          setTest(
+            loadedTest
           );
+
+          setAttempt(
+            loadedAttempt
+          );
+
+          setSections(
+            normalizedSections
+          );
+
+          setQuestions(
+            normalizedQuestions
+          );
+
+          setQuestionsState(
+            restored
+          );
+
+          const firstQuestion =
+            normalizedQuestions.find(
+              (question) =>
+                restored[
+                  question.id
+                ]?.visited
+            ) ||
+            normalizedQuestions[0];
+
+          setCurrentQuestionId(
+            firstQuestion
+              ? Number(
+                  firstQuestion.id
+                )
+              : null
+          );
+        } catch (error) {
+          console.error(
+            "Attempt load error:",
+            error
+          );
+
+          if (!cancelled) {
+            setLoadError(
+              error?.message ||
+                "Unable to load test."
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setLoading(false);
+          }
         }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
+      };
 
     load();
 
@@ -1295,6 +1579,12 @@ export default function AttemptPage() {
     attemptId,
     router,
   ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOCAL BACKUP
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1334,6 +1624,12 @@ export default function AttemptPage() {
     questions.length,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | SERVER CHECKPOINT EVERY 60 SECONDS
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     if (
       !attempt?.id ||
@@ -1357,6 +1653,12 @@ export default function AttemptPage() {
     loading,
     saveCheckpoint,
   ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | MASTER TIMER
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1396,9 +1698,20 @@ export default function AttemptPage() {
           elapsed
         );
 
+        /*
+         * DPP is stopwatch style.
+         */
+
         if (isDpp) {
           return;
         }
+
+        /*
+         * Sectional timer.
+         *
+         * Only THIS timer is allowed to
+         * unlock the next section.
+         */
 
         if (
           sectional &&
@@ -1453,9 +1766,14 @@ export default function AttemptPage() {
             )
           );
 
+          /*
+           * Section transition happens only
+           * here, after timer calculation.
+           */
+
           if (
             activeIndex !==
-            activeSectionIndex
+              activeSectionIndex
           ) {
             setActiveSectionIndex(
               activeIndex
@@ -1479,12 +1797,15 @@ export default function AttemptPage() {
             ) {
               setCurrentQuestionId(
                 Number(
-                  nextQuestions[0]
-                    .id
+                  nextQuestions[0].id
                 )
               );
             }
           }
+
+          /*
+           * Final section timeout.
+           */
 
           if (
             remaining === 0 &&
@@ -1500,6 +1821,10 @@ export default function AttemptPage() {
 
           return;
         }
+
+        /*
+         * Fixed full-test timer.
+         */
 
         if (fixedTimer) {
           const total =
@@ -1544,6 +1869,12 @@ export default function AttemptPage() {
     fixedTimer,
     test?.durationMinutes,
   ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | QUESTION TIME
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1605,6 +1936,12 @@ export default function AttemptPage() {
     currentQuestionId,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | FULLSCREEN
+  |--------------------------------------------------------------------------
+  */
+
   const enterFullscreen =
     useCallback(
       async () => {
@@ -1634,6 +1971,12 @@ export default function AttemptPage() {
     enterFullscreenRef.current =
       enterFullscreen;
   }, [enterFullscreen]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | INITIAL FULLSCREEN
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1675,6 +2018,12 @@ export default function AttemptPage() {
     attempt?.id,
     enterFullscreen,
   ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | REGISTER VIOLATION
+  |--------------------------------------------------------------------------
+  */
 
   const registerViolation =
     useCallback(
@@ -1724,7 +2073,8 @@ export default function AttemptPage() {
         }
 
         if (
-          reason === "fullscreen"
+          reason ===
+          "fullscreen"
         ) {
           toast.warning(
             "Fullscreen exit detected."
@@ -1754,6 +2104,12 @@ export default function AttemptPage() {
       },
       []
     );
+
+  /*
+  |--------------------------------------------------------------------------
+  | FULLSCREEN CHANGE
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1790,6 +2146,12 @@ export default function AttemptPage() {
     attempt?.id,
     registerViolation,
   ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | TAB SWITCH
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (
@@ -1846,6 +2208,12 @@ export default function AttemptPage() {
     registerViolation,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | DEVTOOLS / CONTEXT MENU
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     if (
       loading ||
@@ -1878,7 +2246,9 @@ export default function AttemptPage() {
               "i",
               "j",
               "c",
-            ].includes(key)) ||
+            ].includes(
+              key
+            )) ||
           (ctrlOrMeta &&
             key === "u");
 
@@ -1935,6 +2305,12 @@ export default function AttemptPage() {
     attempt?.id,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | BEFORE UNLOAD
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     if (
       !attempt?.id ||
@@ -1973,6 +2349,12 @@ export default function AttemptPage() {
     saveCheckpoint,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | CLEANUP
+  |--------------------------------------------------------------------------
+  */
+
   useEffect(() => {
     return () => {
       if (
@@ -1984,6 +2366,12 @@ export default function AttemptPage() {
       }
     };
   }, []);
+
+  /*
+  |--------------------------------------------------------------------------
+  | KEYBOARD NAVIGATION
+  |--------------------------------------------------------------------------
+  */
 
   useEffect(() => {
     if (loading) {
@@ -2006,12 +2394,11 @@ export default function AttemptPage() {
         ) {
           event.preventDefault();
 
-          goToQuestion(
-            sectionQuestions[
-              currentSectionQuestionIndex +
-                1
-            ]?.id
-          );
+          /*
+           * Uses the same guarded navigation function
+           * as the footer.
+           */
+          nextQuestion();
         }
 
         if (
@@ -2046,6 +2433,12 @@ export default function AttemptPage() {
     loading,
   ]);
 
+  /*
+  |--------------------------------------------------------------------------
+  | OPTION SELECTION
+  |--------------------------------------------------------------------------
+  */
+
   const selectOption = (
     optionIndex
   ) => {
@@ -2077,6 +2470,12 @@ export default function AttemptPage() {
     );
   };
 
+  /*
+  |--------------------------------------------------------------------------
+  | REVIEW
+  |--------------------------------------------------------------------------
+  */
+
   const toggleReview = () => {
     if (!currentQuestion) {
       return;
@@ -2103,17 +2502,41 @@ export default function AttemptPage() {
     );
   };
 
+  /*
+  |--------------------------------------------------------------------------
+  | NEXT / PREVIOUS
+  |--------------------------------------------------------------------------
+  |
+  | IMPORTANT PHASE 1 FIX:
+  |
+  | nextQuestion NEVER manually opens another section.
+  |
+  | If current section has ended:
+  |   - do nothing
+  |   - timer is responsible for unlocking next section
+  |--------------------------------------------------------------------------
+  */
+
   const nextQuestion =
-    () => {
+    useCallback(() => {
       const index =
         sectionQuestions.findIndex(
           (question) =>
-            Number(question.id) ===
+            Number(
+              question.id
+            ) ===
             Number(
               currentQuestionId
             )
         );
 
+      if (index < 0) {
+        return;
+      }
+
+      /*
+       * Normal question inside current section.
+       */
       const next =
         sectionQuestions[
           index + 1
@@ -2123,15 +2546,49 @@ export default function AttemptPage() {
         goToQuestion(
           next.id
         );
+
+        return;
       }
-    };
+
+      /*
+       * CURRENT SECTION ENDED.
+       *
+       * NEVER jump into the next section here.
+       *
+       * The timer effect is the ONLY place that
+       * unlocks the next section.
+       */
+      if (
+        sectional &&
+        activeSectionIndex <
+          timedSections.length - 1
+      ) {
+        return;
+      }
+
+      /*
+       * If this is the final question of the entire
+       * test, there is also nothing to navigate to.
+       *
+       * The footer shows Submit Test separately.
+       */
+    }, [
+      sectionQuestions,
+      currentQuestionId,
+      goToQuestion,
+      sectional,
+      activeSectionIndex,
+      timedSections.length,
+    ]);
 
   const previousQuestion =
-    () => {
+    useCallback(() => {
       const index =
         sectionQuestions.findIndex(
           (question) =>
-            Number(question.id) ===
+            Number(
+              question.id
+            ) ===
             Number(
               currentQuestionId
             )
@@ -2147,7 +2604,17 @@ export default function AttemptPage() {
           previous.id
         );
       }
-    };
+    }, [
+      sectionQuestions,
+      currentQuestionId,
+      goToQuestion,
+    ]);
+
+  /*
+  |--------------------------------------------------------------------------
+  | SECTION SELECTION
+  |--------------------------------------------------------------------------
+  */
 
   const selectSection =
     (index) => {
@@ -2158,6 +2625,10 @@ export default function AttemptPage() {
         return;
       }
 
+      /*
+       * Existing sequential-section behavior
+       * remains untouched.
+       */
       if (
         timedSections[index]
           .isSequential &&
@@ -2178,9 +2649,8 @@ export default function AttemptPage() {
               question.sectionId
             ) ===
             Number(
-              timedSections[
-                index
-              ].id
+              timedSections[index]
+                .id
             )
         );
 
@@ -2190,6 +2660,12 @@ export default function AttemptPage() {
         );
       }
     };
+
+  /*
+  |--------------------------------------------------------------------------
+  | CURRENT STATE
+  |--------------------------------------------------------------------------
+  */
 
   const currentState =
     currentQuestion
@@ -2206,26 +2682,48 @@ export default function AttemptPage() {
         }
       : null;
 
-  const headerTime = isDpp
-    ? elapsedSeconds
-    : sectional || fixedTimer
-    ? remainingSeconds
-    : elapsedSeconds;
+  /*
+  |--------------------------------------------------------------------------
+  | HEADER TIMER
+  |--------------------------------------------------------------------------
+  */
+
+  const headerTime =
+    isDpp
+      ? elapsedSeconds
+      : sectional ||
+        fixedTimer
+      ? remainingSeconds
+      : elapsedSeconds;
 
   const currentQuestionNumber =
     questions.findIndex(
       (question) =>
-        Number(question.id) ===
+        Number(
+          question.id
+        ) ===
         Number(
           currentQuestion?.id
         )
     ) + 1;
+
+  /*
+  |--------------------------------------------------------------------------
+  | LOADING
+  |--------------------------------------------------------------------------
+  */
 
   if (loading) {
     return (
       <SpiderManLoader text="Loading Test..." />
     );
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | ERROR
+  |--------------------------------------------------------------------------
+  */
 
   if (
     loadError ||
@@ -2263,12 +2761,17 @@ export default function AttemptPage() {
     );
   }
 
-  const currentStatus =
-    getStatus(currentState);
+  /*
+  |--------------------------------------------------------------------------
+  | MAIN UI
+  |--------------------------------------------------------------------------
+  */
 
   return (
     <div className="fixed inset-0 z-[100] flex h-screen h-[100dvh] w-screen flex-col overflow-hidden bg-[#f8fafc] font-sans">
+      {/* ================================================================ */}
       {/* HEADER */}
+      {/* ================================================================ */}
 
       <header className="shrink-0 border-b border-slate-200 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.05)]">
         <div className="flex h-[72px] items-center justify-between px-4 sm:px-5 lg:px-8">
@@ -2279,7 +2782,9 @@ export default function AttemptPage() {
 
             <div className="mt-0.5 truncate text-xs font-medium text-slate-500">
               {test.seriesName} · Attempt{" "}
-              {attempt.attemptNumber}
+              {
+                attempt.attemptNumber
+              }
             </div>
           </div>
 
@@ -2287,7 +2792,9 @@ export default function AttemptPage() {
             <button
               type="button"
               onClick={() =>
-                setMobilePalette(true)
+                setMobilePalette(
+                  true
+                )
               }
               className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 lg:hidden"
             >
@@ -2363,7 +2870,9 @@ export default function AttemptPage() {
         )}
       </header>
 
+      {/* ================================================================ */}
       {/* BODY */}
+      {/* ================================================================ */}
 
       <div className="flex min-h-0 flex-1">
         <main className="min-w-0 flex-1 overflow-hidden">
@@ -2374,7 +2883,9 @@ export default function AttemptPage() {
               <div className="flex items-center gap-2">
                 <span className="rounded-[10px] border border-slate-200 bg-white px-4 py-2 text-sm font-extrabold text-slate-700 shadow-[0_1px_3px_rgba(15,23,42,0.08)]">
                   Question{" "}
-                  {currentQuestionNumber}
+                  {
+                    currentQuestionNumber
+                  }
                 </span>
 
                 <span className="rounded-lg bg-green-50 px-2.5 py-1.5 text-sm font-extrabold text-green-600">
@@ -2422,9 +2933,7 @@ export default function AttemptPage() {
                   </div>
                 ) : null}
 
-                {/* =====================================================
-                    QUESTION IMAGE
-                    ===================================================== */}
+                {/* QUESTION IMAGE */}
 
                 {currentQuestion.questionImageUrl ? (
                   <div
@@ -2441,7 +2950,9 @@ export default function AttemptPage() {
                       alt={`Question ${currentQuestionNumber}`}
                       className="mx-auto block h-auto max-h-[65vh] w-auto max-w-full object-contain"
                       loading="eager"
-                      draggable={false}
+                      draggable={
+                        false
+                      }
                     />
                   </div>
                 ) : null}
@@ -2498,7 +3009,9 @@ export default function AttemptPage() {
               </div>
             </div>
 
-            {/* FOOTER */}
+            {/* ============================================================
+                FOOTER
+            ============================================================ */}
 
             <div className="fixed bottom-0 left-0 right-0 z-[220] border-t border-slate-200 bg-white/95 px-3 py-3 shadow-[0_-8px_25px_rgba(15,23,42,0.08)] backdrop-blur lg:static lg:z-auto lg:bg-white lg:px-8 lg:py-4 lg:shadow-none">
               <div className="mx-auto flex w-full max-w-[1000px] items-center justify-between gap-2">
@@ -2544,20 +3057,20 @@ export default function AttemptPage() {
                     <ChevronLeft className="h-5 w-5" />
                   </button>
 
-                  {sectionQuestions[
-                    currentSectionQuestionIndex +
-                      1
-                  ] ? (
-                    <button
-                      type="button"
-                      onClick={
-                        nextQuestion
-                      }
-                      className="cursor-pointer rounded-xl bg-[#2563eb] px-4 py-2.5 text-xs font-extrabold text-white shadow-sm sm:px-5 sm:text-sm"
-                    >
-                      Save & Next
-                    </button>
-                  ) : (
+                  {/*
+                   * =======================================================
+                   * PHASE 1 FOOTER FIX
+                   * =======================================================
+                   *
+                   * SUBMIT TEST ONLY appears on the FINAL QUESTION
+                   * OF THE ENTIRE TEST.
+                   *
+                   * At the end of Section 1 / Section 2 / etc:
+                   * Save & Next remains visible but disabled until
+                   * the timer unlocks the next section.
+                   */}
+
+                  {isLastQuestionOfEntireTest ? (
                     <button
                       type="button"
                       onClick={() =>
@@ -2569,6 +3082,23 @@ export default function AttemptPage() {
                     >
                       SUBMIT TEST
                     </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={
+                        nextQuestion
+                      }
+                      disabled={
+                        sectionBoundaryLocked
+                      }
+                      className={`rounded-xl px-4 py-2.5 text-xs font-extrabold shadow-sm sm:px-5 sm:text-sm ${
+                        sectionBoundaryLocked
+                          ? "cursor-not-allowed bg-slate-300 text-slate-500 shadow-none"
+                          : "cursor-pointer bg-[#2563eb] text-white hover:bg-[#1d4ed8]"
+                      }`}
+                    >
+                      Save & Next
+                    </button>
                   )}
                 </div>
               </div>
@@ -2576,7 +3106,9 @@ export default function AttemptPage() {
           </div>
         </main>
 
+        {/* ============================================================ */}
         {/* DESKTOP PALETTE */}
+        {/* ============================================================ */}
 
         {desktopPalette && (
           <aside className="hidden w-[340px] shrink-0 border-l border-slate-200 bg-[#f8fafc] lg:flex lg:flex-col">
@@ -2762,7 +3294,9 @@ export default function AttemptPage() {
           </button>
         )}
 
+        {/* ============================================================ */}
         {/* MOBILE PALETTE */}
+        {/* ============================================================ */}
 
         {mobilePalette && (
           <>
@@ -2935,7 +3469,9 @@ export default function AttemptPage() {
         )}
       </div>
 
+      {/* ================================================================ */}
       {/* SUBMIT MODAL */}
+      {/* ================================================================ */}
 
       {showSubmitModal && (
         <div className="fixed inset-0 z-[500] flex items-center justify-center bg-slate-950/65 px-4 backdrop-blur-md">
@@ -2962,7 +3498,9 @@ export default function AttemptPage() {
               <div className="mt-7 grid grid-cols-2 gap-3">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
                   <div className="text-2xl font-black text-green-600">
-                    {answeredCount}
+                    {
+                      answeredCount
+                    }
                   </div>
 
                   <div className="mt-1 text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -2972,7 +3510,9 @@ export default function AttemptPage() {
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
                   <div className="text-2xl font-black text-orange-500">
-                    {notAnsweredCount}
+                    {
+                      notAnsweredCount
+                    }
                   </div>
 
                   <div className="mt-1 text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -2982,7 +3522,9 @@ export default function AttemptPage() {
 
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
                   <div className="text-2xl font-black text-purple-600">
-                    {markedCount}
+                    {
+                      markedCount
+                    }
                   </div>
 
                   <div className="mt-1 text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -3041,7 +3583,9 @@ export default function AttemptPage() {
         </div>
       )}
 
+      {/* ================================================================ */}
       {/* FULLSCREEN / TAB WARNING */}
+      {/* ================================================================ */}
 
       {showFullscreenWarning && (
         <div className="fixed inset-0 z-[600] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">

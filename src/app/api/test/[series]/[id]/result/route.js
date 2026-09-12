@@ -1,403 +1,755 @@
 import { NextResponse } from "next/server";
-import {
-  getAccessibleTest,
-  getSeriesConfig,
-  requireRuntimeUser,
-} from "@/lib/testRuntime";
+
 import { db } from "@/lib/turso";
 
-export async function GET(request, { params }) {
-  try {
-    const { series, id } = await params;
+import {
+  SERIES_CONFIG,
+  normalizeSeries,
+  normalizeId,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getTestById,
+  jsonError,
+} from "@/lib/testSecurity";
 
-    const auth = await requireRuntimeUser();
+/* =========================================================
+   GET
+   /api/test/[series]/[id]/result?attemptId=123
+========================================================= */
+
+export async function GET(
+  request,
+  { params }
+) {
+  try {
+    /* -------------------------------------------------------
+       PARAMS
+    ------------------------------------------------------- */
+
+    const {
+      series: rawSeries,
+      id: rawId,
+    } = await params;
+
+    const series =
+      normalizeSeries(rawSeries);
+
+    const testId =
+      normalizeId(rawId);
+
+    /* -------------------------------------------------------
+       AUTH
+       
+       Centralized in testSecurity.js.
+       
+       This validates:
+       - JWT
+       - user
+       - account active
+       - session
+       - device
+    ------------------------------------------------------- */
+
+    const auth =
+      await requireAuthenticatedUser();
 
     if (!auth.ok) {
-      return NextResponse.json(
-        { error: auth.error, code: auth.code || null },
-        { status: auth.status }
+      return auth.response;
+    }
+
+    const {
+      userId,
+      currentUser,
+    } = auth;
+
+    /* -------------------------------------------------------
+       SERIES VALIDATION
+    ------------------------------------------------------- */
+
+    if (
+      !SERIES_CONFIG[series]
+    ) {
+      return jsonError(
+        "Invalid test series.",
+        400,
+        "INVALID_SERIES"
       );
     }
 
-    const config = getSeriesConfig(series);
-
-    if (!config) {
-      return NextResponse.json(
-        { error: "Invalid test series." },
-        { status: 400 }
+    if (!testId) {
+      return jsonError(
+        "Invalid test id.",
+        400,
+        "INVALID_TEST_ID"
       );
     }
 
-    const testId = Number(id);
+    /* -------------------------------------------------------
+       SERIES ACCESS
+       
+       IMPORTANT:
+       
+       Paid access is checked from the verified JWT.
+       
+       No user_series_access entitlement query here.
+    ------------------------------------------------------- */
 
-    if (!Number.isInteger(testId) || testId <= 0) {
-      return NextResponse.json(
-        { error: "Invalid test id." },
-        { status: 400 }
+    const accessCheck =
+      requireSeriesAccess(
+        currentUser,
+        series
+      );
+
+    if (!accessCheck.ok) {
+      return accessCheck.response;
+    }
+
+    /* -------------------------------------------------------
+       TEST
+    ------------------------------------------------------- */
+
+    const testResult =
+      await getTestById(
+        series,
+        testId
+      );
+
+    if (!testResult.ok) {
+      return testResult.response;
+    }
+
+    const {
+      test,
+      config: securityConfig,
+    } = testResult;
+
+    /* -------------------------------------------------------
+       KEEP EXISTING TABLE ALIASES
+       
+       The result SQL below uses:
+         attempts
+         sections
+         questions
+         answers
+         options
+       
+       Central config stores:
+         attemptTable
+         sectionTable
+         questionTable
+         answerTable
+         optionTable
+    ------------------------------------------------------- */
+
+    const config = {
+      ...securityConfig,
+
+      attempts:
+        securityConfig.attemptTable,
+
+      sections:
+        securityConfig.sectionTable,
+
+      questions:
+        securityConfig.questionTable,
+
+      answers:
+        securityConfig.answerTable,
+
+      options:
+        securityConfig.optionTable,
+    };
+
+    /* -------------------------------------------------------
+       ATTEMPT ID
+    ------------------------------------------------------- */
+
+    const url =
+      new URL(request.url);
+
+    const attemptId =
+      normalizeId(
+        url.searchParams.get(
+          "attemptId"
+        )
+      );
+
+    if (!attemptId) {
+      return jsonError(
+        "Invalid attempt id.",
+        400,
+        "INVALID_ATTEMPT_ID"
       );
     }
 
-    const url = new URL(request.url);
-    const attemptId = Number(url.searchParams.get("attemptId"));
+    /* -------------------------------------------------------
+       ATTEMPT
+       
+       Verify:
+       - attempt exists
+       - belongs to current user
+       - belongs to current test
+    ------------------------------------------------------- */
 
-    if (!Number.isInteger(attemptId) || attemptId <= 0) {
-      return NextResponse.json(
-        { error: "Invalid attempt id." },
-        { status: 400 }
-      );
-    }
+    const attemptResult =
+      await db.execute({
+        sql: `
+          SELECT
+            id,
+            user_id,
+            test_id,
+            event_id,
+            attempt_number,
+            status,
+            started_at,
+            submitted_at,
+            deadline_at,
+            score,
+            total_marks,
+            correct_count,
+            wrong_count,
+            unanswered_count,
+            time_taken_seconds,
+            created_at
 
-    const access = await getAccessibleTest(
-      series,
-      testId,
-      auth.userId
-    );
+          FROM ${config.attempts}
 
-    if (!access.ok) {
-      return NextResponse.json(
-        { error: access.error },
-        { status: access.status }
-      );
-    }
+          WHERE
+            id = ?
+            AND user_id = ?
+            AND test_id = ?
 
-    const attemptResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          user_id,
-          test_id,
-          event_id,
-          attempt_number,
-          status,
-          started_at,
-          submitted_at,
-          deadline_at,
-          score,
-          total_marks,
-          correct_count,
-          wrong_count,
-          unanswered_count,
-          time_taken_seconds,
-          created_at
-        FROM ${config.attempts}
-        WHERE id = ?
-          AND user_id = ?
-          AND test_id = ?
-        LIMIT 1
-      `,
-      args: [
-        attemptId,
-        auth.userId,
-        testId,
-      ],
-    });
+          LIMIT 1
+        `,
 
-    const attempt = attemptResult.rows?.[0];
+        args: [
+          attemptId,
+          userId,
+          testId,
+        ],
+      });
+
+    const attempt =
+      attemptResult.rows?.[0];
 
     if (!attempt) {
-      return NextResponse.json(
-        { error: "Attempt not found." },
-        { status: 404 }
+      return jsonError(
+        "Attempt not found.",
+        404,
+        "ATTEMPT_NOT_FOUND"
       );
     }
+
+    /* -------------------------------------------------------
+       SUBMISSION STATUS
+       
+       Result is available only after the attempt has
+       actually been submitted / auto-submitted / expired.
+    ------------------------------------------------------- */
 
     if (
       ![
         "submitted",
         "auto_submitted",
         "expired",
-      ].includes(String(attempt.status))
+      ].includes(
+        String(
+          attempt.status
+        )
+      )
     ) {
-      return NextResponse.json(
-        {
-          error: "This attempt has not been submitted yet.",
-          code: "ATTEMPT_NOT_SUBMITTED",
-        },
-        { status: 409 }
+      return jsonError(
+        "This attempt has not been submitted yet.",
+        409,
+        "ATTEMPT_NOT_SUBMITTED"
       );
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Sections
-    |--------------------------------------------------------------------------
-    */
+    /* =======================================================
+       SECTIONS
+    ======================================================= */
 
-    const sectionsResult = await db.execute({
-      sql: `
-        SELECT
-          id,
-          test_id,
-          section_name,
-          section_order,
-          duration_minutes,
-          question_count,
-          is_sequential,
-          timer_group
-        FROM ${config.sections}
-        WHERE test_id = ?
-        ORDER BY section_order ASC
-      `,
-      args: [testId],
-    });
+    const sectionsResult =
+      await db.execute({
+        sql: `
+          SELECT
+            id,
+            test_id,
+            section_name,
+            section_order,
+            duration_minutes,
+            question_count,
+            is_sequential,
+            timer_group
 
-    /*
-    |--------------------------------------------------------------------------
-    | Question-wise analysis
-    |--------------------------------------------------------------------------
-    */
+          FROM ${config.sections}
 
-    const questionsResult = await db.execute({
-      sql: `
-        SELECT
-          q.id,
-          q.section_id,
-          q.question_text,
-          q.explanation,
-          q.question_type,
-          q.marks,
-          q.negative_marks,
-          q.question_order,
+          WHERE test_id = ?
 
-          a.selected_option_id,
-          a.is_correct,
-          a.marks_obtained,
-          a.time_spent_seconds,
-          a.visited,
-          a.marked_for_review,
-          a.answered_at,
+          ORDER BY
+            section_order ASC
+        `,
 
-          selected_opt.option_label AS selected_option_label,
-          selected_opt.option_text AS selected_option_text,
+        args: [
+          testId,
+        ],
+      });
 
-          correct_opt.id AS correct_option_id,
-          correct_opt.option_label AS correct_option_label,
-          correct_opt.option_text AS correct_option_text
+    /* =======================================================
+       QUESTION-WISE ANALYSIS
+    ======================================================= */
 
-        FROM ${config.questions} q
+    const questionsResult =
+      await db.execute({
+        sql: `
+          SELECT
+            q.id,
+            q.section_id,
+            q.question_text,
+            q.explanation,
+            q.question_type,
+            q.marks,
+            q.negative_marks,
+            q.question_order,
 
-        LEFT JOIN ${config.answers} a
-          ON a.question_id = q.id
-         AND a.attempt_id = ?
+            a.selected_option_id,
+            a.is_correct,
+            a.marks_obtained,
+            a.time_spent_seconds,
+            a.visited,
+            a.marked_for_review,
+            a.answered_at,
 
-        LEFT JOIN ${config.options} selected_opt
-          ON selected_opt.id = a.selected_option_id
-         AND selected_opt.question_id = q.id
+            selected_opt.option_label
+              AS selected_option_label,
 
-        LEFT JOIN ${config.options} correct_opt
-          ON correct_opt.question_id = q.id
-         AND correct_opt.is_correct = 1
+            selected_opt.option_text
+              AS selected_option_text,
 
-        WHERE q.test_id = ?
+            correct_opt.id
+              AS correct_option_id,
 
-        ORDER BY q.question_order ASC
-      `,
-      args: [
-        attemptId,
-        testId,
-      ],
-    });
+            correct_opt.option_label
+              AS correct_option_label,
 
-    const questions = (questionsResult.rows || []).map(
-      (row) => ({
-        id: Number(row.id),
-        sectionId:
-          row.section_id == null
-            ? null
-            : Number(row.section_id),
+            correct_opt.option_text
+              AS correct_option_text
 
-        questionText: row.question_text,
-        explanation: row.explanation || "",
+          FROM ${config.questions} q
 
-        questionType:
-          row.question_type || "mcq",
+          LEFT JOIN ${config.answers} a
+            ON a.question_id = q.id
+            AND a.attempt_id = ?
 
-        marks: Number(row.marks || 0),
-        negativeMarks: Number(
-          row.negative_marks || 0
-        ),
+          LEFT JOIN ${config.options} selected_opt
+            ON selected_opt.id =
+              a.selected_option_id
 
-        questionOrder: Number(
-          row.question_order || 0
-        ),
+            AND selected_opt.question_id =
+              q.id
 
-        selectedOptionId:
-          row.selected_option_id == null
-            ? null
-            : Number(row.selected_option_id),
+          LEFT JOIN ${config.options} correct_opt
+            ON correct_opt.question_id =
+              q.id
 
-        selectedOptionLabel:
-          row.selected_option_label || null,
+            AND correct_opt.is_correct = 1
 
-        selectedOptionText:
-          row.selected_option_text || null,
+          WHERE
+            q.test_id = ?
 
-        correctOptionId:
-          row.correct_option_id == null
-            ? null
-            : Number(row.correct_option_id),
+          ORDER BY
+            q.question_order ASC
+        `,
 
-        correctOptionLabel:
-          row.correct_option_label || null,
+        args: [
+          attemptId,
+          testId,
+        ],
+      });
 
-        correctOptionText:
-          row.correct_option_text || null,
+    /* -------------------------------------------------------
+       NORMALIZE QUESTIONS
+    ------------------------------------------------------- */
 
-        isCorrect:
-          row.is_correct == null
-            ? null
-            : Number(row.is_correct) === 1,
+    const questions =
+      (
+        questionsResult.rows ||
+        []
+      ).map(
+        (row) => ({
+          id:
+            Number(row.id),
 
-        marksObtained:
-          Number(row.marks_obtained || 0),
+          sectionId:
+            row.section_id == null
+              ? null
+              : Number(
+                  row.section_id
+                ),
 
-        timeSpentSeconds:
-          Number(row.time_spent_seconds || 0),
+          questionText:
+            row.question_text,
 
-        visited:
-          Number(row.visited || 0) === 1,
+          explanation:
+            row.explanation ||
+            "",
 
-        markedForReview:
-          Number(row.marked_for_review || 0) === 1,
+          questionType:
+            row.question_type ||
+            "mcq",
 
-        answeredAt:
-          row.answered_at || null,
-      })
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | Section analysis
-    |--------------------------------------------------------------------------
-    */
-
-    const sectionAnalysis = (
-      sectionsResult.rows || []
-    ).map((section) => {
-      const sectionQuestions =
-        questions.filter(
-          (question) =>
-            Number(question.sectionId) ===
-            Number(section.id)
-        );
-
-      const answered =
-        sectionQuestions.filter(
-          (question) =>
-            question.selectedOptionId != null
-        ).length;
-
-      const correct =
-        sectionQuestions.filter(
-          (question) =>
-            question.isCorrect === true
-        ).length;
-
-      const wrong =
-        sectionQuestions.filter(
-          (question) =>
-            question.isCorrect === false &&
-            question.selectedOptionId != null
-        ).length;
-
-      const unanswered =
-        sectionQuestions.length - answered;
-
-      const sectionScore =
-        sectionQuestions.reduce(
-          (sum, question) =>
-            sum + Number(question.marksObtained || 0),
-          0
-        );
-
-      const timeTaken =
-        sectionQuestions.reduce(
-          (sum, question) =>
-            sum +
+          marks:
             Number(
-              question.timeSpentSeconds || 0
+              row.marks ||
+                0
             ),
-          0
-        );
 
-      return {
-        id: Number(section.id),
-        sectionName: section.section_name,
-        sectionOrder: Number(
-          section.section_order || 0
-        ),
-        durationMinutes:
-          section.duration_minutes == null
-            ? null
-            : Number(section.duration_minutes),
+          negativeMarks:
+            Number(
+              row.negative_marks ||
+                0
+            ),
 
-        questionCount:
-          sectionQuestions.length,
+          /*
+           * Stable original position of the question.
+           */
+          questionOrder:
+            Number(
+              row.question_order ||
+                0
+            ),
 
-        answered,
-        correct,
-        wrong,
-        unanswered,
+          selectedOptionId:
+            row.selected_option_id ==
+              null
+              ? null
+              : Number(
+                  row.selected_option_id
+                ),
 
-        score: Number(
-          sectionScore.toFixed(2)
-        ),
+          selectedOptionLabel:
+            row.selected_option_label ||
+            null,
 
-        timeTakenSeconds: timeTaken,
-      };
-    });
+          selectedOptionText:
+            row.selected_option_text ||
+            null,
 
-    /*
-    |--------------------------------------------------------------------------
-    | Overall statistics
-    |--------------------------------------------------------------------------
-    */
+          correctOptionId:
+            row.correct_option_id ==
+              null
+              ? null
+              : Number(
+                  row.correct_option_id
+                ),
 
-    const totalQuestions = questions.length;
+          correctOptionLabel:
+            row.correct_option_label ||
+            null,
+
+          correctOptionText:
+            row.correct_option_text ||
+            null,
+
+          isCorrect:
+            row.is_correct == null
+              ? null
+              : Number(
+                  row.is_correct
+                ) === 1,
+
+          marksObtained:
+            Number(
+              row.marks_obtained ||
+                0
+            ),
+
+          timeSpentSeconds:
+            Number(
+              row.time_spent_seconds ||
+                0
+            ),
+
+          visited:
+            Number(
+              row.visited ||
+                0
+            ) === 1,
+
+          markedForReview:
+            Number(
+              row.marked_for_review ||
+                0
+            ) === 1,
+
+          answeredAt:
+            row.answered_at ||
+            null,
+        })
+      );
+
+    /* =======================================================
+       SECTION ANALYSIS
+    ======================================================= */
+
+    const sectionAnalysis =
+      (
+        sectionsResult.rows ||
+        []
+      ).map(
+        (section) => {
+          const sectionQuestions =
+            questions.filter(
+              (question) =>
+                Number(
+                  question.sectionId
+                ) ===
+                Number(
+                  section.id
+                )
+            );
+
+          const answered =
+            sectionQuestions.filter(
+              (question) =>
+                question.selectedOptionId !=
+                null
+            ).length;
+
+          const correct =
+            sectionQuestions.filter(
+              (question) =>
+                question.isCorrect ===
+                true
+            ).length;
+
+          const wrong =
+            sectionQuestions.filter(
+              (question) =>
+                question.isCorrect ===
+                  false &&
+                question.selectedOptionId !=
+                  null
+            ).length;
+
+          const unanswered =
+            sectionQuestions.length -
+            answered;
+
+          const sectionScore =
+            sectionQuestions.reduce(
+              (
+                sum,
+                question
+              ) =>
+                sum +
+                Number(
+                  question.marksObtained ||
+                    0
+                ),
+              0
+            );
+
+          const timeTaken =
+            sectionQuestions.reduce(
+              (
+                sum,
+                question
+              ) =>
+                sum +
+                Number(
+                  question.timeSpentSeconds ||
+                    0
+                ),
+              0
+            );
+
+          return {
+            id:
+              Number(
+                section.id
+              ),
+
+            sectionName:
+              section.section_name,
+
+            sectionOrder:
+              Number(
+                section.section_order ||
+                  0
+              ),
+
+            durationMinutes:
+              section.duration_minutes ==
+              null
+                ? null
+                : Number(
+                    section.duration_minutes
+                  ),
+
+            questionCount:
+              sectionQuestions.length,
+
+            answered,
+
+            correct,
+
+            wrong,
+
+            unanswered,
+
+            score:
+              Number(
+                sectionScore.toFixed(
+                  2
+                )
+              ),
+
+            timeTakenSeconds:
+              timeTaken,
+          };
+        }
+      );
+
+    /* =======================================================
+       OVERALL STATISTICS
+    ======================================================= */
+
+    const totalQuestions =
+      questions.length;
 
     const attempted =
-      Number(attempt.correct_count || 0) +
-      Number(attempt.wrong_count || 0);
+      Number(
+        attempt.correct_count ||
+          0
+      ) +
+      Number(
+        attempt.wrong_count ||
+          0
+      );
 
     const accuracy =
       attempted > 0
         ? Number(
             (
-              (Number(attempt.correct_count || 0) /
+              (Number(
+                attempt.correct_count ||
+                  0
+              ) /
                 attempted) *
               100
             ).toFixed(2)
           )
         : 0;
 
+    /* =======================================================
+       TEST NORMALIZATION
+       
+       getTestById() returns raw DB test columns.
+       Keep result response compatible with the existing
+       frontend shape.
+    ======================================================= */
+
+    const normalizedTest = {
+      ...test,
+
+      id:
+        Number(
+          test.id
+        ),
+
+      title:
+        test.title ||
+        test.name ||
+        `Test ${testId}`,
+
+      durationMinutes:
+        Number(
+          test.duration_minutes ??
+            test.durationMinutes ??
+            0
+        ),
+
+      totalQuestions:
+        Number(
+          test.total_questions ??
+            test.totalQuestions ??
+            totalQuestions
+        ),
+
+      totalMarks:
+        Number(
+          test.total_marks ??
+            test.totalMarks ??
+            0
+        ),
+
+      categoryId:
+        test.category_id ??
+        test.categoryId ??
+        null,
+    };
+
+    /* =======================================================
+       RESULT
+    ======================================================= */
+
     const result = {
-      attemptId: Number(attempt.id),
-      testId: Number(attempt.test_id),
-      attemptNumber: Number(
-        attempt.attempt_number || 1
-      ),
+      attemptId:
+        Number(
+          attempt.id
+        ),
 
-      status: attempt.status,
+      testId:
+        Number(
+          attempt.test_id
+        ),
 
-      startedAt: attempt.started_at,
-      submittedAt: attempt.submitted_at,
+      attemptNumber:
+        Number(
+          attempt.attempt_number ||
+            1
+        ),
 
-      score: Number(attempt.score || 0),
-      totalMarks: Number(
-        attempt.total_marks || access.test.totalMarks || 0
-      ),
+      status:
+        attempt.status,
 
-      correct: Number(
-        attempt.correct_count || 0
-      ),
+      startedAt:
+        attempt.started_at,
 
-      wrong: Number(
-        attempt.wrong_count || 0
-      ),
+      submittedAt:
+        attempt.submitted_at,
 
-      unanswered: Number(
-        attempt.unanswered_count || 0
-      ),
+      score:
+        Number(
+          attempt.score ||
+            0
+        ),
+
+      totalMarks:
+        Number(
+          attempt.total_marks ||
+            normalizedTest.totalMarks ||
+            0
+        ),
+
+      correct:
+        Number(
+          attempt.correct_count ||
+            0
+        ),
+
+      wrong:
+        Number(
+          attempt.wrong_count ||
+            0
+        ),
+
+      unanswered:
+        Number(
+          attempt.unanswered_count ||
+            0
+        ),
 
       attempted,
 
@@ -405,19 +757,28 @@ export async function GET(request, { params }) {
 
       accuracy,
 
-      timeTakenSeconds: Number(
-        attempt.time_taken_seconds || 0
-      ),
+      timeTakenSeconds:
+        Number(
+          attempt.time_taken_seconds ||
+            0
+        ),
 
-      test: access.test,
+      test:
+        normalizedTest,
 
-      sections: sectionAnalysis,
+      sections:
+        sectionAnalysis,
 
       questions,
     };
 
+    /* -------------------------------------------------------
+       RESPONSE
+    ------------------------------------------------------- */
+
     return NextResponse.json({
       success: true,
+
       result,
     });
   } catch (error) {
@@ -432,7 +793,9 @@ export async function GET(request, { params }) {
           error?.message ||
           "Unable to load result.",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }

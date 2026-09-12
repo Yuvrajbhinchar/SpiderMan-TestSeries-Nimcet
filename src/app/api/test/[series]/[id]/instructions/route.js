@@ -1,129 +1,21 @@
 import { NextResponse } from "next/server";
+
 import { db } from "@/lib/turso";
-import { getCurrentUser } from "@/lib/auth";
 
-/* =========================================================
-   SERIES CONFIG
-========================================================= */
-
-const SERIES_CONFIG = {
-  free: {
-    seriesId: 1,
-    testTable: "free_tests",
-    questionTable: "free_questions",
-    optionTable: "free_question_options",
-  },
-
-  asspire: {
-    seriesId: 2,
-    testTable: "asspire_tests",
-    questionTable: "asspire_questions",
-    optionTable: "asspire_question_options",
-  },
-
-  imppetus: {
-    seriesId: 3,
-    testTable: "imppetus_tests",
-    questionTable: "imppetus_questions",
-    optionTable: "imppetus_question_options",
-  },
-
-  spiderman: {
-    seriesId: 4,
-    testTable: "spiderman_tests",
-    questionTable: "spiderman_questions",
-    optionTable: "spiderman_question_options",
-  },
-};
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function normalizeSeries(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeId(value) {
-  const id = Number(value);
-
-  if (!Number.isInteger(id) || id <= 0) {
-    return null;
-  }
-
-  return id;
-}
-
-function firstDefined(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null) {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function toNumber(value, fallback = 0) {
-  const number = Number(value);
-
-  return Number.isFinite(number)
-    ? number
-    : fallback;
-}
-
-function toBoolean(value) {
-  return (
-    value === true ||
-    value === 1 ||
-    value === "1"
-  );
-}
-
-function toIsoUtc(value) {
-  if (!value) {
-    return null;
-  }
-
-  const text = String(value);
-
-  if (
-    text.length === 19 &&
-    text[4] === "-" &&
-    text[7] === "-" &&
-    text[10] === " " &&
-    text[13] === ":" &&
-    text[16] === ":"
-  ) {
-    return `${text.replace(" ", "T")}Z`;
-  }
-
-  const date = new Date(text);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString();
-}
-
-function jsonError(
-  message,
-  status = 400,
-  code = null
-) {
-  return NextResponse.json(
-    {
-      error: message,
-      ...(code ? { code } : {}),
-    },
-    {
-      status,
-    }
-  );
-}
+import {
+  SERIES_CONFIG,
+  normalizeSeries,
+  normalizeId,
+  firstDefined,
+  toNumber,
+  toBoolean,
+  jsonError,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getTestById,
+  getTestCategory,
+  requireTestAvailability,
+} from "@/lib/testSecurity";
 
 /* =========================================================
    GET
@@ -135,25 +27,34 @@ export async function GET(
   { params }
 ) {
   try {
+    /* -------------------------------------------------------
+       PARAMS
+    ------------------------------------------------------- */
+
     const {
       series: rawSeries,
       id: rawId,
     } = await params;
 
     const series =
-      normalizeSeries(rawSeries);
+      normalizeSeries(
+        rawSeries
+      );
 
     const testId =
-      normalizeId(rawId);
+      normalizeId(
+        rawId
+      );
 
     /* -------------------------------------------------------
-       VALIDATION
+       BASIC VALIDATION
     ------------------------------------------------------- */
 
-    const config =
-      SERIES_CONFIG[series];
-
-    if (!config) {
+    if (
+      !SERIES_CONFIG[
+        series
+      ]
+    ) {
       return jsonError(
         "Invalid test series.",
         400,
@@ -171,194 +72,110 @@ export async function GET(
 
     /* -------------------------------------------------------
        AUTH
+       
+       Centralized:
+       - JWT
+       - user existence
+       - account active
+       - active session
+       - active device
     ------------------------------------------------------- */
 
-    const currentUser =
-      await getCurrentUser();
+    const auth =
+      await requireAuthenticatedUser();
 
-    if (!currentUser?.id) {
-      return jsonError(
-        "Please login to continue.",
-        401,
-        "UNAUTHORIZED"
-      );
+    if (!auth.ok) {
+      return auth.response;
     }
 
-    const userId =
-      Number(currentUser.id);
+    const {
+      currentUser,
+    } = auth;
 
-    if (
-      !Number.isInteger(userId) ||
-      userId <= 0
-    ) {
-      return jsonError(
-        "Invalid user session.",
-        401,
-        "INVALID_SESSION"
+    /* -------------------------------------------------------
+       SERIES ACCESS
+       
+       IMPORTANT:
+       
+       Paid series entitlement comes from the verified
+       JWT snapshot.
+       
+       No user_series_access entitlement query.
+    ------------------------------------------------------- */
+
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
       );
+
+    if (!access.ok) {
+      return access.response;
     }
 
     /* -------------------------------------------------------
-       USER / SESSION VALIDATION
-    ------------------------------------------------------- */
-
-    const userResult =
-      await db.execute({
-        sql: `
-          SELECT
-            id,
-            username,
-            email,
-            display_name,
-            role,
-            is_active,
-            active_session_id,
-            active_device_id
-          FROM users
-          WHERE id = ?
-          LIMIT 1
-        `,
-        args: [userId],
-      });
-
-    const user =
-      userResult.rows?.[0];
-
-    if (!user) {
-      return jsonError(
-        "User account not found.",
-        401,
-        "USER_NOT_FOUND"
-      );
-    }
-
-    if (
-      Number(user.is_active) !== 1
-    ) {
-      return jsonError(
-        "Your account is inactive.",
-        403,
-        "ACCOUNT_INACTIVE"
-      );
-    }
-
-    if (
-      !currentUser.sessionId ||
-      !user.active_session_id ||
-      String(
-        currentUser.sessionId
-      ) !==
-        String(
-          user.active_session_id
-        )
-    ) {
-      return jsonError(
-        "Your session is no longer active.",
-        401,
-        "SESSION_REVOKED"
-      );
-    }
-
-    if (
-      !currentUser.deviceId ||
-      !user.active_device_id ||
-      String(
-        currentUser.deviceId
-      ) !==
-        String(
-          user.active_device_id
-        )
-    ) {
-      return jsonError(
-        "This device is no longer active.",
-        401,
-        "DEVICE_REVOKED"
-      );
-    }
-
-    /* -------------------------------------------------------
-       LOAD TEST
+       TEST
+       
+       Centralized test lookup.
     ------------------------------------------------------- */
 
     const testResult =
-      await db.execute({
-        sql: `
-          SELECT
-            t.id,
-            t.category_id,
-            t.title,
-            t.slug,
-            t.description,
-            t.duration_minutes,
-            t.total_questions,
-            t.total_marks,
-            t.is_published,
-            t.created_at,
-            t.updated_at,
+      await getTestById(
+        series,
+        testId
+      );
 
-            c.name AS category_name,
-            c.slug AS category_slug,
+    if (!testResult.ok) {
+      return testResult.response;
+    }
 
-            ts.id AS series_id,
-            ts.name AS series_name,
-            ts.slug AS series_slug,
-            ts.is_paid AS series_is_paid
+    const {
+      test: testRow,
+      config,
+    } = testResult;
 
-          FROM ${config.testTable} t
+    /* -------------------------------------------------------
+       PHASE 5
+       
+       CENTRAL AVAILABILITY CHECK
+       
+       Checks:
+       
+       1. Series is active
+       2. Category is active
+       3. Test is active
+       4. Test is published
+       
+       IMPORTANT:
+       
+       This route is for starting the test/instructions,
+       so inactive/unpublished tests are blocked here.
+    ------------------------------------------------------- */
 
-          LEFT JOIN test_categories c
-            ON c.id = t.category_id
+    const availability =
+      await requireTestAvailability({
+        config,
 
-          LEFT JOIN test_series ts
-            ON ts.id = ?
-
-          WHERE
-            t.id = ?
-            AND t.is_published = 1
-
-          LIMIT 1
-        `,
-        args: [
-          config.seriesId,
-          testId,
-        ],
+        test:
+          testRow,
       });
 
-    const test =
-      testResult.rows?.[0];
-
-    if (!test) {
-      return jsonError(
-        "Test not found.",
-        404,
-        "TEST_NOT_FOUND"
-      );
+    if (!availability.ok) {
+      return availability.response;
     }
 
-    /*
-    |----------------------------------------------------------------------
-    | SERIES ACCESS
-    |----------------------------------------------------------------------
-    |
-    | Free series are always accessible.
-    | Paid series access is checked from the verified JWT snapshot.
-    |
-    | IMPORTANT: no user_series_access entitlement query is performed
-    | on this request. Entitlement is loaded when the JWT is issued.
-    |----------------------------------------------------------------------
-    */
+    /* -------------------------------------------------------
+       CATEGORY
+       
+       We already fetched it inside availability, but keep
+       the existing helper call because this route needs the
+       category metadata for the response.
+    ------------------------------------------------------- */
 
-    const hasSeriesAccess =
-      series === "free" ||
-      currentUser.seriesAccess?.[series] === true;
-
-    if (!hasSeriesAccess) {
-      return jsonError(
-        "You do not have access to this test series.",
-        403,
-        "SERIES_ACCESS_REQUIRED"
+    const category =
+      await getTestCategory(
+        testRow
       );
-    }
 
     /* -------------------------------------------------------
        CATEGORY / MODE
@@ -366,23 +183,70 @@ export async function GET(
 
     const categorySlug =
       String(
-        test.category_slug || ""
+        firstDefined(
+          category?.slug,
+          ""
+        )
       )
         .trim()
         .toLowerCase();
 
     const categoryName =
       firstDefined(
-        test.category_name,
+        category?.name,
         null
       );
 
     const isDpp =
-      categorySlug === "dpp";
+      categorySlug ===
+      "dpp";
 
     /* -------------------------------------------------------
-       QUESTIONS
+       SERIES META
+       
+       Presentation metadata only.
     ------------------------------------------------------- */
+
+    let seriesMeta =
+      null;
+
+    try {
+      const seriesResult =
+        await db.execute({
+          sql: `
+            SELECT
+              id,
+              name,
+              slug,
+              is_paid,
+              is_active
+            FROM test_series
+            WHERE id = ?
+            LIMIT 1
+          `,
+
+          args: [
+            config.seriesId,
+          ],
+        });
+
+      seriesMeta =
+        seriesResult.rows?.[0] ||
+        null;
+    } catch (error) {
+      /*
+       * Optional metadata failure should not crash the
+       * instructions response.
+       */
+      console.warn(
+        "[instructions] Series metadata lookup failed:",
+        error
+      );
+    }
+
+    /* =======================================================
+       QUESTIONS
+    ======================================================= */
 
     const questionResult =
       await db.execute({
@@ -396,14 +260,22 @@ export async function GET(
             question_type,
             marks,
             negative_marks,
-            question_order
+            question_order,
+            question_image_url
+
           FROM ${config.questionTable}
-          WHERE test_id = ?
+
+          WHERE
+            test_id = ?
+
           ORDER BY
             question_order ASC,
             id ASC
         `,
-        args: [testId],
+
+        args: [
+          testId,
+        ],
       });
 
     const rawQuestions =
@@ -414,7 +286,8 @@ export async function GET(
         : [];
 
     if (
-      rawQuestions.length === 0
+      rawQuestions.length ===
+      0
     ) {
       return jsonError(
         "No questions were found for this test.",
@@ -423,28 +296,42 @@ export async function GET(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        OPTIONS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const questionIds =
       rawQuestions
         .map(
-          (question) =>
-            Number(question.id)
+          (
+            question
+          ) =>
+            Number(
+              question.id
+            )
         )
         .filter(
-          (id) =>
-            Number.isInteger(id) &&
-            id > 0
+          (
+            questionId
+          ) =>
+            Number.isInteger(
+              questionId
+            ) &&
+            questionId > 0
         );
 
-    let rawOptions = [];
+    let rawOptions =
+      [];
 
-    if (questionIds.length > 0) {
+    if (
+      questionIds.length >
+      0
+    ) {
       const placeholders =
         questionIds
-          .map(() => "?")
+          .map(
+            () => "?"
+          )
           .join(",");
 
       const optionResult =
@@ -456,14 +343,20 @@ export async function GET(
               option_label,
               option_text,
               option_order
+
             FROM ${config.optionTable}
-            WHERE question_id IN (${placeholders})
+
+            WHERE
+              question_id IN (${placeholders})
+
             ORDER BY
               question_id ASC,
               option_order ASC,
               id ASC
           `,
-          args: questionIds,
+
+          args:
+            questionIds,
         });
 
       rawOptions =
@@ -474,10 +367,17 @@ export async function GET(
           : [];
     }
 
+    /* =======================================================
+       OPTIONS BY QUESTION
+    ======================================================= */
+
     const optionsByQuestion =
       new Map();
 
-    for (const option of rawOptions) {
+    for (
+      const option of
+        rawOptions
+    ) {
       const questionId =
         Number(
           firstDefined(
@@ -507,9 +407,14 @@ export async function GET(
       }
 
       optionsByQuestion
-        .get(questionId)
+        .get(
+          questionId
+        )
         .push({
-          id: Number(option.id),
+          id:
+            Number(
+              option.id
+            ),
 
           label:
             firstDefined(
@@ -537,15 +442,20 @@ export async function GET(
         });
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        RESPONSE QUESTIONS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const questions =
       rawQuestions.map(
-        (question, index) => ({
+        (
+          question,
+          index
+        ) => ({
           id:
-            Number(question.id),
+            Number(
+              question.id
+            ),
 
           testId:
             Number(
@@ -575,6 +485,17 @@ export async function GET(
               question.questionText,
               question.text,
               ""
+            ),
+
+          /* -------------------------------------------------
+             QUESTION IMAGE
+          ------------------------------------------------- */
+
+          questionImageUrl:
+            firstDefined(
+              question.question_image_url,
+              question.questionImageUrl,
+              null
             ),
 
           explanation:
@@ -611,7 +532,20 @@ export async function GET(
               )
             ),
 
+          /* -------------------------------------------------
+             STABLE QUESTION ORDER
+          ------------------------------------------------- */
+
           questionOrder:
+            Number(
+              firstDefined(
+                question.question_order,
+                question.questionOrder,
+                index + 1
+              )
+            ),
+
+          number:
             Number(
               firstDefined(
                 question.question_order,
@@ -622,17 +556,22 @@ export async function GET(
 
           options:
             optionsByQuestion.get(
-              Number(question.id)
+              Number(
+                question.id
+              )
             ) || [],
         })
       );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        TEST RESPONSE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const testResponse = {
-      id: Number(test.id),
+      id:
+        Number(
+          testRow.id
+        ),
 
       series,
 
@@ -641,83 +580,142 @@ export async function GET(
 
       seriesName:
         firstDefined(
-          test.series_name,
+          seriesMeta?.name,
           null
         ),
 
       seriesSlug:
         firstDefined(
-          test.series_slug,
+          seriesMeta?.slug,
           series
         ),
 
+      seriesIsPaid:
+        toBoolean(
+          firstDefined(
+            seriesMeta?.is_paid,
+            seriesMeta?.isPaid,
+            series !== "free"
+              ? 1
+              : 0
+          )
+        ),
+
+      /*
+       * Phase 5 state information.
+       */
+
+      seriesIsActive:
+        seriesMeta
+          ? Number(
+              seriesMeta.is_active
+            ) === 1
+          : true,
+
+      testIsActive:
+        Number(
+          firstDefined(
+            testRow.is_active,
+            testRow.isActive,
+            0
+          )
+        ) === 1,
+
+      isPublished:
+        Number(
+          firstDefined(
+            testRow.is_published,
+            testRow.isPublished,
+            0
+          )
+        ) === 1,
+
       title:
         firstDefined(
-          test.title,
+          testRow.title,
+          testRow.name,
           `Test ${testId}`
         ),
 
       slug:
         firstDefined(
-          test.slug,
+          testRow.slug,
           null
         ),
 
       description:
         firstDefined(
-          test.description,
+          testRow.description,
           ""
         ),
 
       durationMinutes:
         toNumber(
-          test.duration_minutes,
+          firstDefined(
+            testRow.duration_minutes,
+            testRow.durationMinutes,
+            0
+          ),
           0
         ),
 
       totalQuestions:
         toNumber(
-          test.total_questions,
+          firstDefined(
+            testRow.total_questions,
+            testRow.totalQuestions,
+            questions.length
+          ),
           questions.length
         ),
 
       totalMarks:
         toNumber(
-          test.total_marks,
+          firstDefined(
+            testRow.total_marks,
+            testRow.totalMarks,
+            0
+          ),
           0
         ),
 
-      isPublished:
-        toBoolean(
-          test.is_published
-        ),
-
       categoryId:
-        test.category_id ===
-          null ||
-        test.category_id ===
-          undefined
+        firstDefined(
+          testRow.category_id,
+          testRow.categoryId
+        ) === null
           ? null
           : Number(
-              test.category_id
+              firstDefined(
+                testRow.category_id,
+                testRow.categoryId
+              )
             ),
 
       categoryName,
 
       categorySlug,
 
+      categoryIsActive:
+        category
+          ? Number(
+              category.is_active
+            ) === 1
+          : true,
+
       isDpp,
     };
 
-    /* -------------------------------------------------------
+    /* =======================================================
        RESPONSE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     return NextResponse.json(
       {
         success: true,
 
-        test: testResponse,
+        test:
+          testResponse,
 
         questions,
 
@@ -740,6 +738,20 @@ export async function GET(
           categoryName,
 
           isDpp,
+
+          availability: {
+            seriesActive:
+              true,
+
+            categoryActive:
+              true,
+
+            testActive:
+              true,
+
+            published:
+              true,
+          },
         },
       },
       {
@@ -748,9 +760,12 @@ export async function GET(
         headers: {
           "Cache-Control":
             "private, no-store, max-age=0",
+
           Pragma:
             "no-cache",
-          Expires: "0",
+
+          Expires:
+            "0",
         },
       }
     );

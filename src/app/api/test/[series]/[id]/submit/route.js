@@ -1,87 +1,37 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/turso";
-import { getCurrentUser } from "@/lib/auth";
+
+import {
+  SERIES_CONFIG,
+  normalizeSeries,
+  normalizeId,
+  toNumber,
+  firstDefined,
+  jsonError,
+  requireAuthenticatedUser,
+  requireSeriesAccess,
+  getTestById,
+  getTestCategory,
+} from "@/lib/testSecurity";
 
 /* =========================================================
-   SERIES CONFIG
+   DATE HELPER
 ========================================================= */
-
-const SERIES_CONFIG = {
-  free: {
-    seriesId: 1,
-    testTable: "free_tests",
-    questionTable: "free_questions",
-    optionTable: "free_question_options",
-    attemptTable: "free_test_attempts",
-    answerTable: "free_attempt_answers",
-  },
-
-  asspire: {
-    seriesId: 2,
-    testTable: "asspire_tests",
-    questionTable: "asspire_questions",
-    optionTable: "asspire_question_options",
-    attemptTable: "asspire_test_attempts",
-    answerTable: "asspire_attempt_answers",
-  },
-
-  imppetus: {
-    seriesId: 3,
-    testTable: "imppetus_tests",
-    questionTable: "imppetus_questions",
-    optionTable: "imppetus_question_options",
-    attemptTable: "imppetus_test_attempts",
-    answerTable: "imppetus_attempt_answers",
-  },
-
-  spiderman: {
-    seriesId: 4,
-    testTable: "spiderman_tests",
-    questionTable: "spiderman_questions",
-    optionTable: "spiderman_question_options",
-    attemptTable: "spiderman_test_attempts",
-    answerTable: "spiderman_attempt_answers",
-  },
-};
-
-/* =========================================================
-   HELPERS
-========================================================= */
-
-function normalizeSeries(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeId(value) {
-  const id = Number(value);
-
-  if (!Number.isInteger(id) || id <= 0) {
-    return null;
-  }
-
-  return id;
-}
-
-function toNumber(value, fallback = 0) {
-  const number = Number(value);
-
-  return Number.isFinite(number)
-    ? number
-    : fallback;
-}
 
 function toIsoUtc(value) {
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
 
   const text = String(value);
 
   /*
    * Turso / SQLite:
+   *
    * YYYY-MM-DD HH:mm:ss
    */
+
   if (
     text.length === 19 &&
     text[4] === "-" &&
@@ -90,32 +40,24 @@ function toIsoUtc(value) {
     text[13] === ":" &&
     text[16] === ":"
   ) {
-    return `${text.replace(" ", "T")}Z`;
+    return `${text.replace(
+      " ",
+      "T"
+    )}Z`;
   }
 
-  const date = new Date(text);
+  const date =
+    new Date(text);
 
-  if (Number.isNaN(date.getTime())) {
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
     return null;
   }
 
   return date.toISOString();
-}
-
-function jsonError(
-  message,
-  status = 400,
-  code = null
-) {
-  return NextResponse.json(
-    {
-      error: message,
-      ...(code ? { code } : {}),
-    },
-    {
-      status,
-    }
-  );
 }
 
 /* =========================================================
@@ -123,7 +65,10 @@ function jsonError(
    /api/test/[series]/[id]/submit
 ========================================================= */
 
-export async function POST(request, { params }) {
+export async function POST(
+  request,
+  { params }
+) {
   try {
     /* -------------------------------------------------------
        PARAMS
@@ -134,14 +79,25 @@ export async function POST(request, { params }) {
       id: rawId,
     } = await params;
 
-    const series = normalizeSeries(rawSeries);
-    const testId = normalizeId(rawId);
+    const series =
+      normalizeSeries(
+        rawSeries
+      );
+
+    const testId =
+      normalizeId(
+        rawId
+      );
 
     /* -------------------------------------------------------
        VALIDATION
     ------------------------------------------------------- */
 
-    if (!SERIES_CONFIG[series]) {
+    if (
+      !SERIES_CONFIG[
+        series
+      ]
+    ) {
       return jsonError(
         "Invalid test series.",
         400,
@@ -157,37 +113,66 @@ export async function POST(request, { params }) {
       );
     }
 
+    /* -------------------------------------------------------
+       CENTRAL CONFIG
+    ------------------------------------------------------- */
+
     const config =
-      SERIES_CONFIG[series];
+      SERIES_CONFIG[
+        series
+      ];
 
     /* -------------------------------------------------------
        AUTH
+       
+       Centralized in testSecurity.js
+       
+       This now checks:
+       - JWT
+       - DB user
+       - account active
+       - active session
+       - active device
     ------------------------------------------------------- */
 
-    const user = await getCurrentUser();
+    const auth =
+      await requireAuthenticatedUser();
 
-    if (!user?.id) {
-      return jsonError(
-        "Unauthorized.",
-        401,
-        "UNAUTHORIZED"
-      );
+    if (!auth.ok) {
+      return auth.response;
     }
 
-    const userId = Number(user.id);
+    const {
+      userId,
+      currentUser,
+    } = auth;
 
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return jsonError(
-        "Invalid authenticated user.",
-        401,
-        "INVALID_USER"
+    /* -------------------------------------------------------
+       SERIES ACCESS
+       
+       IMPORTANT:
+       
+       Paid access is checked from the verified JWT
+       snapshot through testSecurity.js.
+       
+       No user_series_access entitlement query here.
+    ------------------------------------------------------- */
+
+    const access =
+      requireSeriesAccess(
+        currentUser,
+        series
       );
+
+    if (!access.ok) {
+      return access.response;
     }
 
     /* -------------------------------------------------------
        BODY
        
        Current frontend sends:
+       
        {
          attemptId: Number(...)
        }
@@ -196,10 +181,14 @@ export async function POST(request, { params }) {
     const body =
       await request
         .json()
-        .catch(() => ({}));
+        .catch(
+          () => ({})
+        );
 
     const attemptId =
-      normalizeId(body?.attemptId);
+      normalizeId(
+        body?.attemptId
+      );
 
     if (!attemptId) {
       return jsonError(
@@ -214,32 +203,30 @@ export async function POST(request, { params }) {
     ------------------------------------------------------- */
 
     const testResult =
-      await db.execute({
-        sql: `
-          SELECT
-            id,
-            title,
-            duration_minutes,
-            total_questions,
-            total_marks,
-            category_id
-          FROM ${config.testTable}
-          WHERE id = ?
-          LIMIT 1
-        `,
-        args: [testId],
-      });
-
-    const testRow =
-      testResult.rows?.[0];
-
-    if (!testRow) {
-      return jsonError(
-        "Test not found.",
-        404,
-        "TEST_NOT_FOUND"
+      await getTestById(
+        series,
+        testId
       );
+
+    if (!testResult.ok) {
+      return testResult.response;
     }
+
+    const {
+      test: testRow,
+    } = testResult;
+
+    /* -------------------------------------------------------
+       CATEGORY
+
+       Kept available so existing behaviour remains intact
+       if category-dependent logic is needed later.
+    ------------------------------------------------------- */
+
+    const category =
+      await getTestCategory(
+        testRow
+      );
 
     /* -------------------------------------------------------
        ATTEMPT
@@ -247,7 +234,6 @@ export async function POST(request, { params }) {
        Verify:
        - attempt belongs to current user
        - attempt belongs to current test
-       - attempt is still active
     ------------------------------------------------------- */
 
     const attemptResult =
@@ -276,6 +262,7 @@ export async function POST(request, { params }) {
             AND test_id = ?
           LIMIT 1
         `,
+
         args: [
           attemptId,
           userId,
@@ -299,7 +286,9 @@ export async function POST(request, { params }) {
     ------------------------------------------------------- */
 
     if (
-      String(attempt.status) !==
+      String(
+        attempt.status
+      ) !==
       "in_progress"
     ) {
       return jsonError(
@@ -314,19 +303,26 @@ export async function POST(request, { params }) {
        
        DPP:
        deadline_at is normally NULL.
-
+       
        Mini / Mock:
        deadline_at can exist.
     ------------------------------------------------------- */
 
-    const now = new Date();
+    const now =
+      new Date();
 
     const deadlineIso =
-      toIsoUtc(attempt.deadline_at);
+      toIsoUtc(
+        attempt.deadline_at
+      );
 
     const expired =
-      Boolean(deadlineIso) &&
-      new Date(deadlineIso).getTime() <=
+      Boolean(
+        deadlineIso
+      ) &&
+      new Date(
+        deadlineIso
+      ).getTime() <=
         now.getTime();
 
     /*
@@ -345,8 +341,9 @@ export async function POST(request, { params }) {
        QUESTIONS + CORRECT OPTIONS + SAVED ANSWERS
        
        Important:
+       
+       Correct answers are calculated entirely server-side.
        No correct answer is exposed to the frontend.
-       Everything is calculated here on server.
     ------------------------------------------------------- */
 
     const questionsResult =
@@ -365,19 +362,26 @@ export async function POST(request, { params }) {
             ON qo.question_id = q.id
             AND qo.is_correct = 1
 
-          WHERE q.test_id = ?
+          WHERE
+            q.test_id = ?
 
           ORDER BY
             q.question_order ASC,
             q.id ASC
         `,
-        args: [testId],
+
+        args: [
+          testId,
+        ],
       });
 
     const questions =
-      questionsResult.rows || [];
+      questionsResult.rows ||
+      [];
 
-    if (questions.length === 0) {
+    if (
+      questions.length === 0
+    ) {
       return jsonError(
         "This test has no questions.",
         422,
@@ -403,25 +407,41 @@ export async function POST(request, { params }) {
             answered_at,
             visited,
             marked_for_review
+
           FROM ${config.answerTable}
-          WHERE attempt_id = ?
-          ORDER BY question_id ASC
+
+          WHERE
+            attempt_id = ?
+
+          ORDER BY
+            question_id ASC
         `,
-        args: [attemptId],
+
+        args: [
+          attemptId,
+        ],
       });
 
     const savedAnswers =
-      answersResult.rows || [];
+      answersResult.rows ||
+      [];
 
     const answersByQuestion =
       new Map();
 
-    for (const answer of savedAnswers) {
+    for (
+      const answer of
+        savedAnswers
+    ) {
       const questionId =
-        Number(answer.question_id);
+        Number(
+          answer.question_id
+        );
 
       if (
-        !Number.isInteger(questionId) ||
+        !Number.isInteger(
+          questionId
+        ) ||
         questionId <= 0
       ) {
         continue;
@@ -440,20 +460,30 @@ export async function POST(request, { params }) {
     let score = 0;
 
     let correctCount = 0;
+
     let wrongCount = 0;
-    let unansweredCount = 0;
 
-    let totalTimeSeconds = 0;
+    let unansweredCount =
+      0;
 
-    const answerUpdates = [];
+    let totalTimeSeconds =
+      0;
+
+    const answerUpdates =
+      [];
 
     /* -------------------------------------------------------
        SCORE EACH QUESTION
     ------------------------------------------------------- */
 
-    for (const question of questions) {
+    for (
+      const question of
+        questions
+    ) {
       const questionId =
-        Number(question.question_id);
+        Number(
+          question.question_id
+        );
 
       const marks =
         toNumber(
@@ -468,8 +498,10 @@ export async function POST(request, { params }) {
         );
 
       const correctOptionId =
-        question.correct_option_id === null ||
-        question.correct_option_id === undefined
+        question.correct_option_id ===
+          null ||
+        question.correct_option_id ===
+          undefined
           ? null
           : Number(
               question.correct_option_id
@@ -506,24 +538,33 @@ export async function POST(request, { params }) {
       totalTimeSeconds +=
         timeSpentSeconds;
 
-      let isCorrect = null;
-      let marksObtained = 0;
+      let isCorrect =
+        null;
+
+      let marksObtained =
+        0;
 
       /* -----------------------------------------------------
          UNANSWERED
       ----------------------------------------------------- */
 
       if (
-        selectedOptionId === null ||
+        selectedOptionId ===
+          null ||
         !Number.isInteger(
           selectedOptionId
         ) ||
-        selectedOptionId <= 0
+        selectedOptionId <=
+          0
       ) {
-        unansweredCount += 1;
+        unansweredCount +=
+          1;
 
-        isCorrect = null;
-        marksObtained = 0;
+        isCorrect =
+          null;
+
+        marksObtained =
+          0;
       }
 
       /* -----------------------------------------------------
@@ -531,17 +572,22 @@ export async function POST(request, { params }) {
       ----------------------------------------------------- */
 
       else if (
-        correctOptionId !== null &&
+        correctOptionId !==
+          null &&
         selectedOptionId ===
           correctOptionId
       ) {
-        correctCount += 1;
+        correctCount +=
+          1;
 
-        isCorrect = 1;
+        isCorrect =
+          1;
 
-        marksObtained = marks;
+        marksObtained =
+          marks;
 
-        score += marks;
+        score +=
+          marks;
       }
 
       /* -----------------------------------------------------
@@ -549,9 +595,11 @@ export async function POST(request, { params }) {
       ----------------------------------------------------- */
 
       else {
-        wrongCount += 1;
+        wrongCount +=
+          1;
 
-        isCorrect = 0;
+        isCorrect =
+          0;
 
         marksObtained =
           -negativeMarks;
@@ -567,11 +615,13 @@ export async function POST(request, { params }) {
       const visited =
         answer
           ? Number(
-              answer.visited || 0
+              answer.visited ||
+                0
             )
-          : selectedOptionId !== null
-            ? 1
-            : 0;
+          : selectedOptionId !==
+              null
+          ? 1
+          : 0;
 
       const markedForReview =
         answer
@@ -582,11 +632,10 @@ export async function POST(request, { params }) {
           : 0;
 
       const answeredAt =
-        selectedOptionId !== null
-          ? (
-              answer?.answered_at ||
-              now.toISOString()
-            )
+        selectedOptionId !==
+        null
+          ? answer?.answered_at ||
+            now.toISOString()
           : null;
 
       answerUpdates.push({
@@ -620,38 +669,45 @@ export async function POST(request, { params }) {
     /* -------------------------------------------------------
        WRITE FINAL ANSWER STATE
        
-       Checkpoint already created rows.
+       Checkpoint already created the answer rows.
+       
        Here we finalize:
        - is_correct
        - marks_obtained
        - answered_at
        
-       We do not create fake answer rows for questions
-       that were never checkpointed.
+       We intentionally don't create fake answer rows for
+       questions that were never checkpointed.
     ------------------------------------------------------- */
 
-    const answerStatements = [];
+    const answerStatements =
+      [];
 
-    for (const answer of answerUpdates) {
+    for (
+      const answer of
+        answerUpdates
+    ) {
       const existing =
         answersByQuestion.get(
           answer.questionId
         );
 
+      /*
+       * No checkpoint row exists.
+       *
+       * This means no answer interaction was saved.
+       *
+       * We intentionally don't insert a fake row.
+       */
+
       if (!existing) {
-        /*
-         * No checkpoint row exists.
-         *
-         * This means unanswered question.
-         * We intentionally do not insert a row,
-         * because no answer interaction was saved.
-         */
         continue;
       }
 
       answerStatements.push({
         sql: `
           UPDATE ${config.answerTable}
+
           SET
             selected_option_id = ?,
             is_correct = ?,
@@ -660,28 +716,42 @@ export async function POST(request, { params }) {
             answered_at = ?,
             visited = ?,
             marked_for_review = ?
+
           WHERE
             id = ?
             AND attempt_id = ?
             AND question_id = ?
         `,
+
         args: [
           answer.selectedOptionId,
+
           answer.isCorrect,
+
           answer.marksObtained,
+
           answer.timeSpentSeconds,
+
           answer.answeredAt,
+
           answer.visited,
+
           answer.markedForReview,
-          Number(existing.id),
+
+          Number(
+            existing.id
+          ),
+
           attemptId,
+
           answer.questionId,
         ],
       });
     }
 
     if (
-      answerStatements.length > 0
+      answerStatements.length >
+      0
     ) {
       await db.batch(
         answerStatements,
@@ -692,10 +762,11 @@ export async function POST(request, { params }) {
     /* -------------------------------------------------------
        TOTAL MARKS
        
-       Prefer attempt.total_marks because it is already
-       locked at attempt creation.
-
-       Fallback to test.total_marks.
+       Prefer attempt.total_marks because the total was
+       already locked when the attempt was created.
+       
+       Fallback:
+       test.total_marks
     ------------------------------------------------------- */
 
     const totalMarks =
@@ -711,8 +782,8 @@ export async function POST(request, { params }) {
        SUBMIT ATTEMPT
        
        IMPORTANT:
-       No updated_at because the actual schema
-       does not contain updated_at.
+       No updated_at because the existing schema
+       doesn't contain updated_at.
     ------------------------------------------------------- */
 
     const submittedAt =
@@ -722,6 +793,7 @@ export async function POST(request, { params }) {
       await db.execute({
         sql: `
           UPDATE ${config.attemptTable}
+
           SET
             status = ?,
             submitted_at = ?,
@@ -731,23 +803,35 @@ export async function POST(request, { params }) {
             wrong_count = ?,
             unanswered_count = ?,
             time_taken_seconds = ?
+
           WHERE
             id = ?
             AND user_id = ?
             AND test_id = ?
             AND status = 'in_progress'
         `,
+
         args: [
           finalStatus,
+
           submittedAt,
+
           finalScore,
+
           totalMarks,
+
           correctCount,
+
           wrongCount,
+
           unansweredCount,
+
           totalTimeSeconds,
+
           attemptId,
+
           userId,
+
           testId,
         ],
       });
@@ -758,7 +842,8 @@ export async function POST(request, { params }) {
 
     if (
       Number(
-        updateResult.rowsAffected || 0
+        updateResult.rowsAffected ||
+          0
       ) !== 1
     ) {
       return jsonError(
@@ -790,10 +875,14 @@ export async function POST(request, { params }) {
 
         result: {
           attemptId:
-            Number(attemptId),
+            Number(
+              attemptId
+            ),
 
           testId:
-            Number(testId),
+            Number(
+              testId
+            ),
 
           series,
 

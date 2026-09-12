@@ -67,6 +67,9 @@ export default function PracticeLibrary({
   const [loadingMore, setLoadingMore] =
     useState(false);
 
+  const [refreshing, setRefreshing] =
+    useState(false);
+
   const [error, setError] =
     useState("");
 
@@ -81,12 +84,7 @@ export default function PracticeLibrary({
 
   /*
   |--------------------------------------------------------------------------
-  | Keep the latest Redux cache in a ref.
-  |--------------------------------------------------------------------------
-  |
-  | We do this so fetchTests does NOT need cachedEntries in its dependency
-  | array. That prevents filter-change effects from firing repeatedly
-  | whenever another cache entry is written into Redux.
+  | Keep latest Redux cache in a ref.
   |--------------------------------------------------------------------------
   */
 
@@ -100,7 +98,7 @@ export default function PracticeLibrary({
 
   /*
   |--------------------------------------------------------------------------
-  | Prevent duplicate in-flight requests for the exact same cache key.
+  | Prevent duplicate in-flight requests.
   |--------------------------------------------------------------------------
   */
 
@@ -149,11 +147,62 @@ export default function PracticeLibrary({
 
   /*
   |--------------------------------------------------------------------------
-  | REDUX CACHE READ
+  | RAW REDUX CACHE ENTRY
+  |--------------------------------------------------------------------------
+  |
+  | Unlike selectCachedPage(), this function deliberately returns stale
+  | entries too.
+  |
+  | That's required for stale-while-revalidate:
+  |
+  | stale cache → immediately show old data → refresh in background.
   |--------------------------------------------------------------------------
   */
 
-  const readReduxCache =
+  const readReduxCacheEntry =
+    useCallback(
+      (key) => {
+        const entry =
+          cachedEntriesRef.current?.[
+            key
+          ];
+
+        if (!entry) {
+          return null;
+        }
+
+        const timestamp =
+          Number(
+            entry.timestamp || 0
+          );
+
+        const age =
+          Date.now() -
+          timestamp;
+
+        const stale =
+          age > CACHE_TTL_MS;
+
+        return {
+          entry,
+
+          stale,
+        };
+      },
+      []
+    );
+
+  /*
+  |--------------------------------------------------------------------------
+  | NORMAL FRESH-CACHE READ
+  |--------------------------------------------------------------------------
+  |
+  | Keep selectCachedPage() available and use it for the strict fresh
+  | cache path.
+  |--------------------------------------------------------------------------
+  */
+
+  const readFreshReduxCache =
     useCallback(
       (key) => {
         return selectCachedPage(
@@ -171,7 +220,7 @@ export default function PracticeLibrary({
 
   /*
   |--------------------------------------------------------------------------
-  | APPLY CACHED PAGE
+  | APPLY PAGE TO UI
   |--------------------------------------------------------------------------
   */
 
@@ -179,7 +228,9 @@ export default function PracticeLibrary({
     useCallback(
       (
         cachedPage,
-        { append = false } = {}
+        {
+          append = false,
+        } = {}
       ) => {
         if (!cachedPage) {
           return;
@@ -229,6 +280,7 @@ export default function PracticeLibrary({
         );
 
         setLoading(false);
+
         setLoadingMore(false);
       },
       []
@@ -256,16 +308,16 @@ export default function PracticeLibrary({
 
         /*
         |--------------------------------------------------------------------------
-        | 1. REDUX CACHE HIT
+        | 1. FRESH REDUX CACHE
         |--------------------------------------------------------------------------
         */
 
-        const cachedPage =
-          readReduxCache(
+        const freshCachedPage =
+          readFreshReduxCache(
             cacheKey
           );
 
-        if (cachedPage) {
+        if (freshCachedPage) {
           if (
             requestId !==
             requestIdRef.current
@@ -274,8 +326,10 @@ export default function PracticeLibrary({
           }
 
           applyCachedPage(
-            cachedPage,
-            { append }
+            freshCachedPage,
+            {
+              append,
+            }
           );
 
           return;
@@ -283,7 +337,100 @@ export default function PracticeLibrary({
 
         /*
         |--------------------------------------------------------------------------
-        | 2. DUPLICATE REQUEST CHECK
+        | 2. STALE CACHE
+        |--------------------------------------------------------------------------
+        |
+        | This is the important Phase 6B change.
+        |
+        | We DON'T treat stale cache as useless.
+        |
+        | We display it immediately and then continue to the API request.
+        |--------------------------------------------------------------------------
+        */
+
+        const cacheState =
+          readReduxCacheEntry(
+            cacheKey
+          );
+
+        const hasStaleCache =
+          Boolean(
+            cacheState?.entry &&
+            cacheState.stale
+          );
+
+        if (
+          hasStaleCache
+        ) {
+          if (
+            requestId !==
+            requestIdRef.current
+          ) {
+            return;
+          }
+
+          const stalePage =
+            cacheState.entry;
+
+          /*
+           * Show stale data immediately.
+           *
+           * For pagination, append it exactly like a normal cache hit.
+           */
+
+          applyCachedPage(
+            stalePage,
+            {
+              append,
+            }
+          );
+
+          /*
+           * Existing content stays visible while the background
+           * refresh runs.
+           */
+
+          setError("");
+
+          if (append) {
+            setLoadingMore(
+              true
+            );
+          } else {
+            setRefreshing(
+              true
+            );
+
+            /*
+             * IMPORTANT:
+             *
+             * Don't set loading=true.
+             *
+             * Otherwise the UI would replace the useful stale
+             * data with the loading screen.
+             */
+          }
+        } else {
+          /*
+           * No cache at all.
+           *
+           * This is the normal cold-load path.
+           */
+
+          if (append) {
+            setLoadingMore(
+              true
+            );
+          } else {
+            setLoading(true);
+            setRefreshing(false);
+            setError("");
+          }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | 3. DUPLICATE REQUEST CHECK
         |--------------------------------------------------------------------------
         */
 
@@ -307,31 +454,18 @@ export default function PracticeLibrary({
             if (result) {
               applyCachedPage(
                 result,
-                { append }
+                {
+                  append,
+                }
               );
             }
           } catch {
             /*
-             * The original request handles the error.
+             * Original request handles the error.
              */
           }
 
           return;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | 3. REQUEST STATE
-        |--------------------------------------------------------------------------
-        */
-
-        if (append) {
-          setLoadingMore(
-            true
-          );
-        } else {
-          setLoading(true);
-          setError("");
         }
 
         /*
@@ -363,9 +497,9 @@ export default function PracticeLibrary({
             );
 
             /*
-             * Subject filter is only used
-             * for DPP.
+             * Subject filter is only used for DPP.
              */
+
             if (
               activeMode ===
                 "dpp" &&
@@ -386,20 +520,20 @@ export default function PracticeLibrary({
               );
             }
 
+            /*
+             * No browser HTTP cache.
+             *
+             * Redux is the deliberate application cache.
+             */
+
             const response =
               await fetch(
                 `/api/dashboard/tests?${params.toString()}`,
                 {
                   method: "GET",
 
-                  /*
-                   * The browser HTTP cache must
-                   * not store personalized data.
-                   *
-                   * Redux handles the intentional
-                   * 30-second application cache.
-                   */
-                  cache: "no-store",
+                  cache:
+                    "no-store",
                 }
               );
 
@@ -433,10 +567,11 @@ export default function PracticeLibrary({
             };
 
             /*
-             * IMPORTANT:
-             * Timestamp is generated outside
-             * the Redux reducer.
+             * Write fresh server data into Redux.
+             *
+             * setCachedPage creates the fresh timestamp.
              */
+
             dispatch(
               setCachedPage({
                 key: cacheKey,
@@ -471,9 +606,9 @@ export default function PracticeLibrary({
             await requestPromise;
 
           /*
-           * Do not allow an old filter request
-           * to overwrite a newer filter.
+           * Don't allow an old filter request to overwrite a newer one.
            */
+
           if (
             requestId !==
             requestIdRef.current
@@ -483,8 +618,12 @@ export default function PracticeLibrary({
 
           applyCachedPage(
             page,
-            { append }
+            {
+              append,
+            }
           );
+
+          setError("");
         } catch (
           fetchError
         ) {
@@ -500,19 +639,37 @@ export default function PracticeLibrary({
             fetchError
           );
 
-          setError(
-            fetchError?.message ||
-              "Unable to load practice tests."
-          );
+          /*
+           * STALE-WHILE-REVALIDATE BEHAVIOUR:
+           *
+           * If stale data was already shown, don't wipe it out.
+           *
+           * Just surface the error state.
+           */
+
+          if (
+            hasStaleCache
+          ) {
+            setError(
+              "Showing recently cached tests. Refresh failed."
+            );
+          } else {
+            setError(
+              fetchError?.message ||
+                "Unable to load practice tests."
+            );
+          }
         } finally {
           /*
-           * Only delete this exact promise if
-           * it is still the registered request.
+           * Only delete this exact promise if it is still
+           * the registered request.
            */
+
           if (
             inFlightRef.current.get(
               cacheKey
-            ) === requestPromise
+            ) ===
+            requestPromise
           ) {
             inFlightRef.current.delete(
               cacheKey
@@ -524,7 +681,12 @@ export default function PracticeLibrary({
             requestIdRef.current
           ) {
             setLoading(false);
+
             setLoadingMore(
+              false
+            );
+
+            setRefreshing(
               false
             );
           }
@@ -537,7 +699,8 @@ export default function PracticeLibrary({
         applyCachedPage,
         dispatch,
         getCacheKey,
-        readReduxCache,
+        readFreshReduxCache,
+        readReduxCacheEntry,
       ]
     );
 
@@ -549,8 +712,12 @@ export default function PracticeLibrary({
 
   useEffect(() => {
     setTests([]);
+
     setNextCursor(null);
+
     setError("");
+
+    setRefreshing(false);
 
     fetchTests({
       cursor: null,
@@ -586,6 +753,7 @@ export default function PracticeLibrary({
       fetchTests({
         cursor:
           nextCursor,
+
         append: true,
       });
     }, [
@@ -698,6 +866,19 @@ export default function PracticeLibrary({
               {currentSubject}
             </span>
           </>
+        ) : null}
+
+        {/* Background refresh indicator */}
+
+        {refreshing ? (
+          <span className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[10px] font-bold text-slate-400">
+            <Loader2
+              size={11}
+              className="animate-spin"
+            />
+
+            Updating
+          </span>
         ) : null}
       </div>
 
