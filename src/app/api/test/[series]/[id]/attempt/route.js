@@ -18,15 +18,897 @@ import {
   requireTestAvailability,
 } from "@/lib/testSecurity";
 
+const MAX_ATTEMPTS = 3;
+
 /* =========================================================
-   GET
-   /api/test/[series]/[id]/attempt?attemptId=123
+   TIMER HELPERS
+========================================================= */
 
-   IMPORTANT:
-   Existing/in-progress attempts are allowed to load even
-   when the test has subsequently been made inactive.
+function getTimerMode(eventId) {
+  return Number(eventId || 0) > 0
+    ? "live"
+    : "active";
+}
 
-   This is intentional.
+function calculateActiveSeconds(
+  storedSeconds,
+  lastActiveAt
+) {
+  let total = Math.max(
+    0,
+    Number(storedSeconds || 0)
+  );
+
+  if (!lastActiveAt) {
+    return Math.floor(total);
+  }
+
+  const text =
+    String(lastActiveAt);
+
+  const parsed =
+    text.includes("T")
+      ? new Date(text)
+      : new Date(
+          `${text.replace(
+            " ",
+            "T"
+          )}Z`
+        );
+
+  const timestamp =
+    parsed.getTime();
+
+  if (
+    !Number.isFinite(
+      timestamp
+    )
+  ) {
+    return Math.floor(
+      total
+    );
+  }
+
+  total += Math.max(
+    0,
+    Math.floor(
+      (
+        Date.now() -
+        timestamp
+      ) / 1000
+    )
+  );
+
+  return Math.floor(
+    total
+  );
+}
+
+function getRemainingSeconds(
+  durationSeconds,
+  usedSeconds
+) {
+  return Math.max(
+    0,
+    Number(
+      durationSeconds || 0
+    ) -
+      Math.max(
+        0,
+        Number(
+          usedSeconds || 0
+        )
+      )
+  );
+}
+
+/* =========================================================
+   TEST META
+========================================================= */
+
+function buildTestMeta(
+  test,
+  category,
+  testId
+) {
+  const categorySlug =
+    String(
+      firstDefined(
+        category?.slug,
+        ""
+      )
+    )
+      .trim()
+      .toLowerCase();
+
+  return {
+    id:
+      Number(
+        testId
+      ),
+
+    title:
+      firstDefined(
+        test?.title,
+        `Test ${testId}`
+      ),
+
+    slug:
+      firstDefined(
+        test?.slug,
+        null
+      ),
+
+    description:
+      firstDefined(
+        test?.description,
+        ""
+      ),
+
+    categoryId:
+      normalizeId(
+        firstDefined(
+          test?.category_id,
+          test?.categoryId
+        )
+      ),
+
+    categorySlug,
+
+    categoryName:
+      firstDefined(
+        category?.name,
+        null
+      ),
+
+    isDpp:
+      categorySlug ===
+      "dpp",
+
+    isActive:
+      Number(
+        firstDefined(
+          test?.is_active,
+          test?.isActive,
+          0
+        )
+      ) === 1,
+
+    isPublished:
+      toBoolean(
+        firstDefined(
+          test?.is_published,
+          test?.isPublished,
+          0
+        )
+      ),
+
+    durationMinutes:
+      toNumber(
+        firstDefined(
+          test?.duration_minutes,
+          test?.durationMinutes,
+          0
+        ),
+        0
+      ),
+
+    totalQuestions:
+      toNumber(
+        firstDefined(
+          test?.total_questions,
+          test?.totalQuestions,
+          0
+        ),
+        0
+      ),
+
+    totalMarks:
+      toNumber(
+        firstDefined(
+          test?.total_marks,
+          test?.totalMarks,
+          0
+        ),
+        0
+      ),
+  };
+}
+
+/* =========================================================
+   ATTEMPT SERIALIZER
+========================================================= */
+
+function serializeAttempt(
+  row,
+  testRow
+) {
+  const eventId =
+    firstDefined(
+      row?.event_id,
+      row?.eventId,
+      null
+    );
+
+  const mode =
+    getTimerMode(
+      eventId
+    );
+
+  const storedActiveSeconds =
+    toNumber(
+      firstDefined(
+        row?.active_seconds,
+        row?.activeSeconds,
+        0
+      ),
+      0
+    );
+
+  const lastActiveAt =
+    firstDefined(
+      row?.last_active_at,
+      row?.lastActiveAt,
+      null
+    );
+
+  const active =
+    mode === "active"
+      ? calculateActiveSeconds(
+          storedActiveSeconds,
+          lastActiveAt
+        )
+      : storedActiveSeconds;
+
+  const durationMinutes =
+    toNumber(
+      firstDefined(
+        testRow?.duration_minutes,
+        testRow?.durationMinutes,
+        0
+      ),
+      0
+    );
+
+  const durationSeconds =
+    durationMinutes *
+    60;
+
+  return {
+    id:
+      Number(
+        row.id
+      ),
+
+    userId:
+      Number(
+        firstDefined(
+          row.user_id,
+          row.userId,
+          0
+        )
+      ),
+
+    testId:
+      Number(
+        firstDefined(
+          row.test_id,
+          row.testId,
+          0
+        )
+      ),
+
+    eventId:
+      eventId === null ||
+      eventId === undefined
+        ? null
+        : Number(
+            eventId
+          ),
+
+    attemptNumber:
+      Number(
+        firstDefined(
+          row.attempt_number,
+          row.attemptNumber,
+          1
+        )
+      ),
+
+    attempt_number:
+      Number(
+        firstDefined(
+          row.attempt_number,
+          row.attemptNumber,
+          1
+        )
+      ),
+
+    status:
+      String(
+        firstDefined(
+          row.status,
+          "in_progress"
+        )
+      ).toLowerCase(),
+
+    startedAt:
+      toIsoUtc(
+        firstDefined(
+          row.started_at,
+          row.startedAt
+        )
+      ),
+
+    started_at:
+      toIsoUtc(
+        firstDefined(
+          row.started_at,
+          row.startedAt
+        )
+      ),
+
+    submittedAt:
+      toIsoUtc(
+        firstDefined(
+          row.submitted_at,
+          row.submittedAt
+        )
+      ),
+
+    submitted_at:
+      toIsoUtc(
+        firstDefined(
+          row.submitted_at,
+          row.submittedAt
+        )
+      ),
+
+    deadlineAt:
+      toIsoUtc(
+        firstDefined(
+          row.deadline_at,
+          row.deadlineAt
+        )
+      ),
+
+    deadline_at:
+      toIsoUtc(
+        firstDefined(
+          row.deadline_at,
+          row.deadlineAt
+        )
+      ),
+
+    score:
+      row.score === null ||
+      row.score === undefined
+        ? null
+        : Number(
+            row.score
+          ),
+
+    totalMarks:
+      toNumber(
+        firstDefined(
+          row.total_marks,
+          row.totalMarks,
+          testRow?.total_marks,
+          0
+        ),
+        0
+      ),
+
+    correctCount:
+      toNumber(
+        firstDefined(
+          row.correct_count,
+          row.correctCount,
+          0
+        ),
+        0
+      ),
+
+    wrongCount:
+      toNumber(
+        firstDefined(
+          row.wrong_count,
+          row.wrongCount,
+          0
+        ),
+        0
+      ),
+
+    unansweredCount:
+      toNumber(
+        firstDefined(
+          row.unanswered_count,
+          row.unansweredCount,
+          0
+        ),
+        0
+      ),
+
+    timeTakenSeconds:
+      toNumber(
+        firstDefined(
+          row.time_taken_seconds,
+          row.timeTakenSeconds,
+          0
+        ),
+        0
+      ),
+
+    createdAt:
+      toIsoUtc(
+        firstDefined(
+          row.created_at,
+          row.createdAt
+        )
+      ),
+
+    timerMode:
+      mode,
+
+    activeSeconds:
+      active,
+
+    storedActiveSeconds:
+      storedActiveSeconds,
+
+    lastActiveAt:
+      toIsoUtc(
+        lastActiveAt
+      ),
+
+    remainingSeconds:
+      mode === "active"
+        ? getRemainingSeconds(
+            durationSeconds,
+            active
+          )
+        : null,
+  };
+}
+
+/* =========================================================
+   CURRENT LIVE EVENT
+========================================================= */
+
+async function findCurrentLiveEvent(
+  config,
+  testId
+) {
+  const eventTable =
+    config.testTable.replace(
+      "_tests",
+      "_test_events"
+    );
+
+  const result =
+    await db.execute({
+      sql: `
+        SELECT
+          id,
+          test_id,
+          start_at,
+          start_window_end,
+          duration_minutes,
+          auto_submit,
+          is_published
+        FROM ${eventTable}
+        WHERE
+          test_id = ?
+          AND is_published = 1
+          AND start_at <= CURRENT_TIMESTAMP
+          AND start_window_end >= CURRENT_TIMESTAMP
+        ORDER BY
+          start_at DESC,
+          id DESC
+        LIMIT 1
+      `,
+
+      args: [
+        testId,
+      ],
+    });
+
+  return (
+    result.rows?.[0] ||
+    null
+  );
+}
+
+/* =========================================================
+   TIMER ACTION
+========================================================= */
+
+async function handleTimerAction({
+  config,
+  userId,
+  testId,
+  timerAction,
+  attemptId,
+  testRow,
+}) {
+  const result =
+    await db.execute({
+      sql: `
+        SELECT *
+        FROM ${config.attemptTable}
+        WHERE
+          id = ?
+          AND user_id = ?
+          AND test_id = ?
+        LIMIT 1
+      `,
+
+      args: [
+        attemptId,
+        userId,
+        testId,
+      ],
+    });
+
+  const attempt =
+    result.rows?.[0];
+
+  if (!attempt) {
+    return jsonError(
+      "Attempt not found.",
+      404,
+      "ATTEMPT_NOT_FOUND"
+    );
+  }
+
+  if (
+    String(
+      attempt.status || ""
+    ).toLowerCase() !==
+    "in_progress"
+  ) {
+    return jsonError(
+      "This attempt is no longer active.",
+      409,
+      "ATTEMPT_NOT_ACTIVE"
+    );
+  }
+
+  const mode =
+    getTimerMode(
+      firstDefined(
+        attempt.event_id,
+        attempt.eventId,
+        null
+      )
+    );
+
+  /*
+   * LIVE tests ignore pause/heartbeat.
+   * Their fixed event deadline remains authoritative.
+   */
+
+  if (
+    mode === "live"
+  ) {
+    return NextResponse.json(
+      {
+        success: true,
+
+        timerMode:
+          "live",
+
+        action:
+          timerAction,
+
+        paused:
+          false,
+
+        activeSeconds:
+          0,
+
+        remainingSeconds:
+          null,
+
+        deadlineAt:
+          toIsoUtc(
+            attempt.deadline_at
+          ),
+      }
+    );
+  }
+
+  const durationSeconds =
+    Math.max(
+      0,
+      toNumber(
+        firstDefined(
+          testRow?.duration_minutes,
+          testRow?.durationMinutes,
+          0
+        ),
+        0
+      ) * 60
+    );
+
+  const stored =
+    toNumber(
+      firstDefined(
+        attempt.active_seconds,
+        attempt.activeSeconds,
+        0
+      ),
+      0
+    );
+
+  let current =
+    calculateActiveSeconds(
+      stored,
+      firstDefined(
+        attempt.last_active_at,
+        attempt.lastActiveAt,
+        null
+      )
+    );
+
+  current =
+    Math.min(
+      current,
+      durationSeconds
+    );
+
+  const remaining =
+    getRemainingSeconds(
+      durationSeconds,
+      current
+    );
+
+  /* -------------------------------------------------------
+     PAUSE
+  ------------------------------------------------------- */
+
+  if (
+    timerAction === "pause"
+  ) {
+    await db.execute({
+      sql: `
+        UPDATE ${config.attemptTable}
+        SET
+          active_seconds = ?,
+          last_active_at = NULL,
+          deadline_at =
+            datetime(
+              CURRENT_TIMESTAMP,
+              '+' || ? || ' seconds'
+            )
+        WHERE
+          id = ?
+          AND user_id = ?
+          AND test_id = ?
+          AND status = 'in_progress'
+      `,
+
+      args: [
+        current,
+        remaining,
+        attemptId,
+        userId,
+        testId,
+      ],
+    });
+
+    return NextResponse.json({
+      success: true,
+
+      timerMode:
+        "active",
+
+      action:
+        "pause",
+
+      paused:
+        true,
+
+      activeSeconds:
+        current,
+
+      remainingSeconds:
+        remaining,
+    });
+  }
+
+  /* -------------------------------------------------------
+     RESUME
+  ------------------------------------------------------- */
+
+  if (
+    timerAction === "resume"
+  ) {
+    if (
+      remaining <= 0
+    ) {
+      return NextResponse.json(
+        {
+          success: true,
+
+          timerMode:
+            "active",
+
+          action:
+            "resume",
+
+          paused:
+            true,
+
+          activeSeconds:
+            durationSeconds,
+
+          remainingSeconds:
+            0,
+
+          expired:
+            true,
+        },
+        {
+          status: 409,
+        }
+      );
+    }
+
+    await db.execute({
+      sql: `
+        UPDATE ${config.attemptTable}
+        SET
+          active_seconds = ?,
+          last_active_at = CURRENT_TIMESTAMP,
+          deadline_at =
+            datetime(
+              CURRENT_TIMESTAMP,
+              '+' || ? || ' seconds'
+            )
+        WHERE
+          id = ?
+          AND user_id = ?
+          AND test_id = ?
+          AND status = 'in_progress'
+      `,
+
+      args: [
+        current,
+        remaining,
+        attemptId,
+        userId,
+        testId,
+      ],
+    });
+
+    return NextResponse.json({
+      success: true,
+
+      timerMode:
+        "active",
+
+      action:
+        "resume",
+
+      paused:
+        false,
+
+      activeSeconds:
+        current,
+
+      remainingSeconds:
+        remaining,
+    });
+  }
+
+  /* -------------------------------------------------------
+     HEARTBEAT
+  ------------------------------------------------------- */
+
+  if (
+    remaining <= 0
+  ) {
+    await db.execute({
+      sql: `
+        UPDATE ${config.attemptTable}
+        SET
+          active_seconds = ?,
+          last_active_at = NULL,
+          deadline_at =
+            CURRENT_TIMESTAMP
+        WHERE
+          id = ?
+          AND user_id = ?
+          AND test_id = ?
+          AND status = 'in_progress'
+      `,
+
+      args: [
+        durationSeconds,
+        attemptId,
+        userId,
+        testId,
+      ],
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+
+        timerMode:
+          "active",
+
+        action:
+          "heartbeat",
+
+        paused:
+          true,
+
+        activeSeconds:
+          durationSeconds,
+
+        remainingSeconds:
+          0,
+
+        expired:
+          true,
+      },
+      {
+        status: 409,
+      }
+    );
+  }
+
+  await db.execute({
+    sql: `
+      UPDATE ${config.attemptTable}
+      SET
+        active_seconds = ?,
+        last_active_at = CURRENT_TIMESTAMP,
+        deadline_at =
+          datetime(
+            CURRENT_TIMESTAMP,
+            '+' || ? || ' seconds'
+          )
+      WHERE
+        id = ?
+        AND user_id = ?
+        AND test_id = ?
+        AND status = 'in_progress'
+    `,
+
+    args: [
+      current,
+      remaining,
+      attemptId,
+      userId,
+      testId,
+    ],
+  });
+
+  return NextResponse.json({
+    success: true,
+
+    timerMode:
+      "active",
+
+    action:
+      "heartbeat",
+
+    paused:
+      false,
+
+    activeSeconds:
+      current,
+
+    remainingSeconds:
+      remaining,
+  });
+}
+
+/* =========================================================
+   GET ATTEMPT
 ========================================================= */
 
 export async function GET(
@@ -49,22 +931,15 @@ export async function GET(
         rawId
       );
 
-    const {
-      searchParams,
-    } = new URL(
-      request.url
-    );
-
     const attemptId =
       normalizeId(
-        searchParams.get(
-          "attemptId"
+        new URL(
+          request.url
         )
+          .searchParams.get(
+            "attemptId"
+          )
       );
-
-    /* -------------------------------------------------------
-       VALIDATION
-    ------------------------------------------------------- */
 
     if (
       !SERIES_CONFIG[
@@ -94,10 +969,6 @@ export async function GET(
       );
     }
 
-    /* -------------------------------------------------------
-       AUTH
-    ------------------------------------------------------- */
-
     const auth =
       await requireAuthenticatedUser();
 
@@ -107,15 +978,8 @@ export async function GET(
 
     const {
       userId,
-      user,
       currentUser,
     } = auth;
-
-    /* -------------------------------------------------------
-       SERIES ACCESS
-       
-       Paid access remains JWT based.
-    ------------------------------------------------------- */
 
     const access =
       requireSeriesAccess(
@@ -126,10 +990,6 @@ export async function GET(
     if (!access.ok) {
       return access.response;
     }
-
-    /* -------------------------------------------------------
-       TEST
-    ------------------------------------------------------- */
 
     const testResult =
       await getTestById(
@@ -151,24 +1011,6 @@ export async function GET(
         testRow
       );
 
-        /* -------------------------------------------------------
-       ATTEMPT
-    ------------------------------------------------------- */
-
-    /* -------------------------------------------------------
-       PERFORMANCE FIX (parallelize independent reads):
-
-       attempt / sections / questions / saved-answers each
-       only depend on values we already have from the URL
-       (testId, attemptId, userId) — none of them depend on
-       another one's result. They used to run as 4 sequential
-       round trips; now they fire together and we wait once.
-
-       The OPTIONS query further below stays sequential,
-       since it genuinely needs the question ids that come
-       out of questionResult.
-    ------------------------------------------------------- */
-
     const [
       attemptResult,
       sectionResult,
@@ -179,12 +1021,10 @@ export async function GET(
         sql: `
           SELECT *
           FROM ${config.attemptTable}
-
           WHERE
             id = ?
             AND user_id = ?
             AND test_id = ?
-
           LIMIT 1
         `,
 
@@ -199,10 +1039,8 @@ export async function GET(
         sql: `
           SELECT *
           FROM ${config.sectionTable}
-
           WHERE
             test_id = ?
-
           ORDER BY
             section_order ASC,
             id ASC
@@ -217,10 +1055,8 @@ export async function GET(
         sql: `
           SELECT *
           FROM ${config.questionTable}
-
           WHERE
             test_id = ?
-
           ORDER BY
             question_order ASC,
             id ASC
@@ -235,10 +1071,8 @@ export async function GET(
         sql: `
           SELECT *
           FROM ${config.answerTable}
-
           WHERE
             attempt_id = ?
-
           ORDER BY
             question_id ASC
         `,
@@ -260,175 +1094,8 @@ export async function GET(
       );
     }
 
-    /* -------------------------------------------------------
-       BASIC USER CHECK
-    ------------------------------------------------------- */
-
-    if (!user?.id) {
-      return jsonError(
-        "Invalid authenticated user.",
-        401,
-        "INVALID_USER"
-      );
-    }
-
-    /* -------------------------------------------------------
-       ATTEMPT STATUS
-    ------------------------------------------------------- */
-
-    const status =
-      String(
-        firstDefined(
-          attemptRow.status,
-          "in_progress"
-        )
-      ).toLowerCase();
-
-    const normalizedAttempt = {
-      id:
-        Number(
-          attemptRow.id
-        ),
-
-      userId:
-        Number(
-          firstDefined(
-            attemptRow.user_id,
-            attemptRow.userId
-          )
-        ),
-
-      testId:
-        Number(
-          firstDefined(
-            attemptRow.test_id,
-            attemptRow.testId
-          )
-        ),
-
-      eventId:
-        firstDefined(
-          attemptRow.event_id,
-          attemptRow.eventId,
-          null
-        ) === null
-          ? null
-          : Number(
-              firstDefined(
-                attemptRow.event_id,
-                attemptRow.eventId
-              )
-            ),
-
-      attemptNumber:
-        Number(
-          firstDefined(
-            attemptRow.attempt_number,
-            attemptRow.attemptNumber,
-            1
-          )
-        ),
-
-      status,
-
-      startedAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.started_at,
-            attemptRow.startedAt
-          )
-        ),
-
-      submittedAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.submitted_at,
-            attemptRow.submittedAt
-          )
-        ),
-
-      deadlineAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.deadline_at,
-            attemptRow.deadlineAt
-          )
-        ),
-
-      score:
-        toNumber(
-          attemptRow.score,
-          null
-        ),
-
-      totalMarks:
-        toNumber(
-          firstDefined(
-            attemptRow.total_marks,
-            attemptRow.totalMarks
-          ),
-          0
-        ),
-
-      correctCount:
-        toNumber(
-          firstDefined(
-            attemptRow.correct_count,
-            attemptRow.correctCount
-          ),
-          0
-        ),
-
-      wrongCount:
-        toNumber(
-          firstDefined(
-            attemptRow.wrong_count,
-            attemptRow.wrongCount
-          ),
-          0
-        ),
-
-      unansweredCount:
-        toNumber(
-          firstDefined(
-            attemptRow.unanswered_count,
-            attemptRow.unansweredCount
-          ),
-          0
-        ),
-
-      timeTakenSeconds:
-        toNumber(
-          firstDefined(
-            attemptRow.time_taken_seconds,
-            attemptRow.timeTakenSeconds
-          ),
-          0
-        ),
-
-      createdAt:
-        toIsoUtc(
-          firstDefined(
-            attemptRow.created_at,
-            attemptRow.createdAt
-          )
-        ),
-    };
-
-    /* =======================================================
-       SECTIONS
-    ======================================================= */
-
-  
-    const rawSections =
-      Array.isArray(
-        sectionResult.rows
-      )
-        ? sectionResult.rows
-        : [];
-
     const sections =
-      rawSections.map(
+      (sectionResult.rows || []).map(
         (
           section,
           index
@@ -438,14 +1105,7 @@ export async function GET(
               section.id
             ),
 
-          testId:
-            Number(
-              firstDefined(
-                section.test_id,
-                section.testId,
-                testId
-              )
-            ),
+          testId,
 
           sectionName:
             firstDefined(
@@ -469,7 +1129,7 @@ export async function GET(
             firstDefined(
               section.duration_minutes,
               section.durationMinutes
-            ) === null
+            ) == null
               ? null
               : Number(
                   firstDefined(
@@ -505,26 +1165,14 @@ export async function GET(
         })
       );
 
-    /* =======================================================
-       QUESTIONS
-    ======================================================= */
-
-
     const rawQuestions =
-      Array.isArray(
-        questionResult.rows
-      )
-        ? questionResult.rows
-        : [];
+      questionResult.rows ||
+      [];
 
     if (
       rawQuestions.length ===
       0
     ) {
-      console.error(
-        `[attempt GET] No questions for ${series}/${testId}`
-      );
-
       return jsonError(
         "No questions were found for this test.",
         422,
@@ -535,33 +1183,24 @@ export async function GET(
     const questionIds =
       rawQuestions
         .map(
-          (
-            question
-          ) =>
+          (q) =>
             Number(
-              question.id
+              q.id
             )
         )
         .filter(
-          (
-            questionId
-          ) =>
+          (id) =>
             Number.isInteger(
-              questionId
+              id
             ) &&
-            questionId > 0
+            id > 0
         );
-
-    /* =======================================================
-       OPTIONS
-    ======================================================= */
 
     let rawOptions =
       [];
 
     if (
-      questionIds.length >
-      0
+      questionIds.length
     ) {
       const placeholders =
         questionIds
@@ -575,10 +1214,8 @@ export async function GET(
           sql: `
             SELECT *
             FROM ${config.optionTable}
-
             WHERE
               question_id IN (${placeholders})
-
             ORDER BY
               question_id ASC,
               option_order ASC,
@@ -590,16 +1227,9 @@ export async function GET(
         });
 
       rawOptions =
-        Array.isArray(
-          optionsResult.rows
-        )
-          ? optionsResult.rows
-          : [];
+        optionsResult.rows ||
+        [];
     }
-
-    /* =======================================================
-       OPTIONS BY QUESTION
-    ======================================================= */
 
     const optionsByQuestion =
       new Map();
@@ -619,8 +1249,7 @@ export async function GET(
       if (
         !Number.isInteger(
           questionId
-        ) ||
-        questionId <= 0
+        )
       ) {
         continue;
       }
@@ -682,25 +1311,13 @@ export async function GET(
         });
     }
 
-    /* =======================================================
-       SAVED ANSWERS
-    ======================================================= */
-
-  
-
-    const rawAnswers =
-      Array.isArray(
-        answerResult.rows
-      )
-        ? answerResult.rows
-        : [];
-
     const answersByQuestion =
       new Map();
 
     for (
       const answer of
-        rawAnswers
+        answerResult.rows ||
+        []
     ) {
       const questionId =
         Number(
@@ -726,7 +1343,7 @@ export async function GET(
             firstDefined(
               answer.selected_option_id,
               answer.selectedOptionId
-            ) === null
+            ) == null
               ? null
               : Number(
                   firstDefined(
@@ -772,28 +1389,15 @@ export async function GET(
       );
     }
 
-    /* =======================================================
-       SECTION MAP
-    ======================================================= */
-
     const sectionMap =
-      new Map();
-
-    for (
-      const section of
-        sections
-    ) {
-      sectionMap.set(
-        Number(
-          section.id
-        ),
-        section
+      new Map(
+        sections.map(
+          (section) => [
+            section.id,
+            section,
+          ]
+        )
       );
-    }
-
-    /* =======================================================
-       QUESTIONS NORMALIZED
-    ======================================================= */
 
     const questions =
       rawQuestions.map(
@@ -806,17 +1410,18 @@ export async function GET(
               question.id
             );
 
-          const sectionId =
+          const sectionIdValue =
             firstDefined(
               question.section_id,
               question.sectionId
-            ) === null
+            );
+
+          const sectionId =
+            sectionIdValue ==
+              null
               ? null
               : Number(
-                  firstDefined(
-                    question.section_id,
-                    question.sectionId
-                  )
+                  sectionIdValue
                 );
 
           const saved =
@@ -828,19 +1433,12 @@ export async function GET(
             id:
               questionId,
 
-            testId:
-              Number(
-                firstDefined(
-                  question.test_id,
-                  question.testId,
-                  testId
-                )
-              ),
+            testId,
 
             sectionId,
 
             sectionName:
-              sectionId !== null
+              sectionId != null
                 ? sectionMap.get(
                     sectionId
                   )
@@ -932,29 +1530,12 @@ export async function GET(
         }
       );
 
-    /* =======================================================
-       CATEGORY / TIMER FLAGS
-    ======================================================= */
-
-    const categorySlug =
-      String(
-        firstDefined(
-          category?.slug,
-          ""
-        )
-      )
-        .trim()
-        .toLowerCase();
-
-    const categoryName =
-      firstDefined(
-        category?.name,
-        null
+    const meta =
+      buildTestMeta(
+        testRow,
+        category,
+        testId
       );
-
-    const isDpp =
-      categorySlug ===
-      "dpp";
 
     const hasTimedSections =
       sections.some(
@@ -966,136 +1547,28 @@ export async function GET(
       );
 
     const sectional =
-      !isDpp &&
-      hasTimedSections &&
-      sections.some(
-        (section) =>
-          Number(
-            section.durationMinutes ||
-              0
-          ) > 0 &&
-          Boolean(
-            section.timerGroup
-          )
-      );
-
-    /* =======================================================
-       TEST OBJECT
-    ======================================================= */
-
-    const test = {
-      id:
-        testId,
-
-      series,
-
-      seriesId:
-        config.seriesId,
-
-      categoryId:
-        category
-          ? Number(
-              category.id
-            )
-          : normalizeId(
-              firstDefined(
-                testRow.category_id,
-                testRow.categoryId
-              )
-            ),
-
-      categorySlug,
-
-      categoryName,
-
-      isDpp,
-
-      isSectional:
-        sectional,
-
-      sectional,
-
-      /*
-       * PHASE 5 TEST STATE
-       */
-
-      isActive:
-        Number(
-          firstDefined(
-            testRow.is_active,
-            testRow.isActive,
-            0
-          )
-        ) === 1,
-
-      isPublished:
-        toBoolean(
-          firstDefined(
-            testRow.is_published,
-            testRow.isPublished,
-            0
-          )
-        ),
-
-      title:
-        firstDefined(
-          testRow.title,
-          testRow.name,
-          `Test ${testId}`
-        ),
-
-      slug:
-        firstDefined(
-          testRow.slug,
-          null
-        ),
-
-      description:
-        firstDefined(
-          testRow.description,
-          ""
-        ),
-
-      durationMinutes:
-        Number(
-          firstDefined(
-            testRow.duration_minutes,
-            testRow.durationMinutes,
-            0
-          )
-        ),
-
-      totalQuestions:
-        Number(
-          firstDefined(
-            testRow.total_questions,
-            testRow.totalQuestions,
-            questions.length
-          )
-        ),
-
-      totalMarks:
-        Number(
-          firstDefined(
-            testRow.total_marks,
-            testRow.totalMarks,
-            0
-          )
-        ),
-    };
-
-    /* =======================================================
-       RESPONSE
-    ======================================================= */
+      !meta.isDpp &&
+      hasTimedSections;
 
     return NextResponse.json(
       {
         success: true,
 
-        test,
+        test: {
+          ...meta,
+
+          isSectional:
+            sectional,
+
+          sectional:
+            sectional,
+        },
 
         attempt:
-          normalizedAttempt,
+          serializeAttempt(
+            attemptRow,
+            testRow
+          ),
 
         sections,
 
@@ -1121,18 +1594,9 @@ export async function GET(
             sections.length,
 
           savedAnswerCount:
-            rawAnswers.length,
+            answerResult.rows?.length ||
+            0,
 
-          categorySlug,
-
-          isDpp,
-
-          sectional,
-
-          /*
-           * GET is intentionally allowed for an existing
-           * attempt even when availability changed later.
-           */
           availabilityCheckSkipped:
             true,
         },
@@ -1146,9 +1610,6 @@ export async function GET(
 
           Pragma:
             "no-cache",
-
-          Expires:
-            "0",
         },
       }
     );
@@ -1172,22 +1633,7 @@ export async function GET(
 }
 
 /* =========================================================
-   POST
-   /api/test/[series]/[id]/attempt
-
-   mode = "new"
-   mode = "resume"
-
-   PHASE 5 RULE:
-
-   NEW:
-     availability required
-
-   RESUME:
-     availability NOT required
-
-   Existing active attempt:
-     resume even if availability has changed
+   POST ATTEMPT
 ========================================================= */
 
 export async function POST(
@@ -1195,10 +1641,6 @@ export async function POST(
   { params }
 ) {
   try {
-    /* -------------------------------------------------------
-       PARAMS
-    ------------------------------------------------------- */
-
     const {
       series: rawSeries,
       id: rawId,
@@ -1213,10 +1655,6 @@ export async function POST(
       normalizeId(
         rawId
       );
-
-    /* -------------------------------------------------------
-       VALIDATION
-    ------------------------------------------------------- */
 
     if (
       !SERIES_CONFIG[
@@ -1243,10 +1681,6 @@ export async function POST(
         series
       ];
 
-    /* -------------------------------------------------------
-       AUTH
-    ------------------------------------------------------- */
-
     const auth =
       await requireAuthenticatedUser();
 
@@ -1259,10 +1693,6 @@ export async function POST(
       currentUser,
     } = auth;
 
-    /* -------------------------------------------------------
-       SERIES ACCESS
-    ------------------------------------------------------- */
-
     const access =
       requireSeriesAccess(
         currentUser,
@@ -1272,10 +1702,6 @@ export async function POST(
     if (!access.ok) {
       return access.response;
     }
-
-    /* -------------------------------------------------------
-       BODY
-    ------------------------------------------------------- */
 
     const body =
       await request
@@ -1292,10 +1718,23 @@ export async function POST(
         .trim()
         .toLowerCase();
 
-    const requestedAttemptId =
+    const attemptId =
       normalizeId(
         body?.attemptId
       );
+
+    const abandonAttemptId =
+      normalizeId(
+        body?.abandonAttemptId
+      );
+
+    const timerAction =
+      String(
+        body?.timerAction ||
+          ""
+      )
+        .trim()
+        .toLowerCase();
 
     if (
       mode !== "new" &&
@@ -1307,10 +1746,6 @@ export async function POST(
         "INVALID_MODE"
       );
     }
-
-    /* -------------------------------------------------------
-       TEST
-    ------------------------------------------------------- */
 
     const testResult =
       await getTestById(
@@ -1331,22 +1766,16 @@ export async function POST(
         testRow
       );
 
-    /* =======================================================
-       RESUME SPECIFIC ATTEMPT
-       
-       IMPORTANT:
-       
-       Availability is intentionally NOT checked here.
-       
-       An already-started attempt should remain resumable.
-    ======================================================= */
+    /* -------------------------------------------------------
+       TIMER ACTIONS
+    ------------------------------------------------------- */
 
     if (
-      mode === "resume"
+      timerAction === "pause" ||
+      timerAction === "resume" ||
+      timerAction === "heartbeat"
     ) {
-      if (
-        !requestedAttemptId
-      ) {
+      if (!attemptId) {
         return jsonError(
           "Valid attempt ID is required.",
           400,
@@ -1354,29 +1783,86 @@ export async function POST(
         );
       }
 
-      const resumeResult =
+      return handleTimerAction({
+        config,
+
+        userId,
+
+        testId,
+
+        timerAction,
+
+        attemptId,
+
+        testRow,
+      });
+    }
+
+    /* -------------------------------------------------------
+       ABANDON OLD ATTEMPT
+    ------------------------------------------------------- */
+
+    if (
+      abandonAttemptId
+    ) {
+      await db.execute({
+        sql: `
+          UPDATE ${config.attemptTable}
+          SET
+            status = 'abandoned',
+            submitted_at = CURRENT_TIMESTAMP,
+            last_active_at = NULL
+          WHERE
+            id = ?
+            AND user_id = ?
+            AND test_id = ?
+            AND status = 'in_progress'
+        `,
+
+        args: [
+          abandonAttemptId,
+          userId,
+          testId,
+        ],
+      });
+    }
+
+    /* -------------------------------------------------------
+       EXPLICIT RESUME
+    ------------------------------------------------------- */
+
+    if (
+      mode === "resume"
+    ) {
+      if (!attemptId) {
+        return jsonError(
+          "Valid attempt ID is required.",
+          400,
+          "ATTEMPT_ID_REQUIRED"
+        );
+      }
+
+      const result =
         await db.execute({
           sql: `
             SELECT *
             FROM ${config.attemptTable}
-
             WHERE
               id = ?
               AND user_id = ?
               AND test_id = ?
-
             LIMIT 1
           `,
 
           args: [
-            requestedAttemptId,
+            attemptId,
             userId,
             testId,
           ],
         });
 
       const attempt =
-        resumeResult.rows?.[0];
+        result.rows?.[0];
 
       if (!attempt) {
         return jsonError(
@@ -1388,7 +1874,8 @@ export async function POST(
 
       if (
         String(
-          attempt.status
+          attempt.status ||
+            ""
         ) !==
         "in_progress"
       ) {
@@ -1399,148 +1886,112 @@ export async function POST(
         );
       }
 
-      const startedAt =
-        toIsoUtc(
-          attempt.started_at
+      const modeForAttempt =
+        getTimerMode(
+          attempt.event_id
         );
 
-      if (!startedAt) {
-        return jsonError(
-          "Invalid attempt start time.",
-          500,
-          "INVALID_START_TIME"
-        );
+      if (
+        modeForAttempt ===
+        "active"
+      ) {
+        const durationSeconds =
+          Math.max(
+            0,
+            toNumber(
+              testRow.duration_minutes,
+              0
+            ) * 60
+          );
+
+        const current =
+          Math.min(
+            durationSeconds,
+           calculateActiveSeconds(
+  attempt.active_seconds,
+  attempt.last_active_at
+)
+          );
+
+        const remaining =
+          getRemainingSeconds(
+            durationSeconds,
+            current
+          );
+
+        if (
+          remaining <= 0
+        ) {
+          return jsonError(
+            "This attempt has expired.",
+            409,
+            "ATTEMPT_EXPIRED"
+          );
+        }
+
+        await db.execute({
+          sql: `
+            UPDATE ${config.attemptTable}
+            SET
+              active_seconds = ?,
+              last_active_at =
+                CURRENT_TIMESTAMP,
+              deadline_at =
+                datetime(
+                  CURRENT_TIMESTAMP,
+                  '+' || ? || ' seconds'
+                )
+            WHERE
+              id = ?
+              AND user_id = ?
+              AND test_id = ?
+              AND status = 'in_progress'
+          `,
+
+          args: [
+            current,
+            remaining,
+            attemptId,
+            userId,
+            testId,
+          ],
+        });
+
+        attempt.active_seconds =
+          current;
+
+        attempt.last_active_at =
+          new Date().toISOString();
+
+        /*
+         * Re-read deadline is not required for
+         * frontend timer state because remainingSeconds
+         * comes from server state.
+         */
       }
-
-      const deadlineAt =
-        toIsoUtc(
-          attempt.deadline_at
-        );
-
-      console.log(
-        `[attempt POST] RESUME ${series}/${testId} attempt=${attempt.id}`
-      );
 
       return NextResponse.json(
         {
           success: true,
 
-          resumed: true,
+          resumed:
+            true,
 
           mode:
             "resume",
 
-          attempt: {
-            id:
-              Number(
-                attempt.id
-              ),
+          attempt:
+            serializeAttempt(
+              attempt,
+              testRow
+            ),
 
-            userId:
-              Number(
-                attempt.user_id
-              ),
-
-            testId:
-              Number(
-                attempt.test_id
-              ),
-
-            attemptNumber:
-              Number(
-                attempt.attempt_number
-              ),
-
-            status:
-              "in_progress",
-
-            startedAt,
-
-            started_at:
-              startedAt,
-
-            deadlineAt,
-
-            deadline_at:
-              deadlineAt,
-
-            submittedAt:
-              toIsoUtc(
-                attempt.submitted_at
-              ),
-
-            score:
-              attempt.score ===
-              null
-                ? null
-                : Number(
-                    attempt.score
-                  ),
-
-            totalMarks:
-              Number(
-                firstDefined(
-                  attempt.total_marks,
-                  testRow.total_marks,
-                  0
-                )
-              ),
-          },
-
-          test: {
-            id:
-              testId,
-
-            title:
-              firstDefined(
-                testRow.title,
-                `Test ${testId}`
-              ),
-
-            categorySlug:
-              String(
-                firstDefined(
-                  category?.slug,
-                  ""
-                )
-              )
-                .trim()
-                .toLowerCase(),
-
-            isDpp:
-              String(
-                firstDefined(
-                  category?.slug,
-                  ""
-                )
-              )
-                .trim()
-                .toLowerCase() ===
-              "dpp",
-
-            /*
-             * State is returned for frontend awareness,
-             * but does not block resume.
-             */
-
-            isActive:
-              Number(
-                firstDefined(
-                  testRow.is_active,
-                  testRow.isActive,
-                  0
-                )
-              ) === 1,
-
-            isPublished:
-              toBoolean(
-                firstDefined(
-                  testRow.is_published,
-                  testRow.isPublished,
-                  0
-                )
-              ),
-          },
+          test:
+            buildTestMeta(
+              testRow,
+              category,
+              testId
+            ),
         },
         {
           status: 200,
@@ -1553,37 +2004,21 @@ export async function POST(
       );
     }
 
-    /* =======================================================
-       CHECK EXISTING ACTIVE ATTEMPT
-       
-       IMPORTANT:
-       
-       Existing active attempt takes priority over new-test
-       availability.
-       
-       Therefore:
-       
-       test becomes inactive
-       +
-       student already has in_progress attempt
-       
-       => RESUME IT.
-    ======================================================= */
+    /* -------------------------------------------------------
+       FIND EXISTING ACTIVE ATTEMPT
+    ------------------------------------------------------- */
 
-    const activeResult =
+    const existingResult =
       await db.execute({
         sql: `
           SELECT *
           FROM ${config.attemptTable}
-
           WHERE
             user_id = ?
             AND test_id = ?
             AND status = 'in_progress'
-
           ORDER BY
             id DESC
-
           LIMIT 1
         `,
 
@@ -1593,140 +2028,47 @@ export async function POST(
         ],
       });
 
-    const activeAttempt =
-      activeResult.rows?.[0] ||
-      null;
+    const existingAttempt =
+      existingResult.rows?.[0];
 
-    if (activeAttempt) {
-      const startedAt =
-        toIsoUtc(
-          activeAttempt.started_at
-        );
-
-      const deadlineAt =
-        toIsoUtc(
-          activeAttempt.deadline_at
-        );
-
-      console.log(
-        `[attempt POST] EXISTING ${series}/${testId} attempt=${activeAttempt.id} -> resume`
-      );
-
+    if (existingAttempt) {
       return NextResponse.json(
         {
           success: true,
 
-          resumed: true,
+          resumed:
+            true,
 
           mode:
             "resume",
 
-          attempt: {
-            id:
-              Number(
-                activeAttempt.id
-              ),
+          attempt:
+            serializeAttempt(
+              existingAttempt,
+              testRow
+            ),
 
-            userId:
-              Number(
-                activeAttempt.user_id
-              ),
-
-            testId:
-              Number(
-                activeAttempt.test_id
-              ),
-
-            attemptNumber:
-              Number(
-                activeAttempt.attempt_number
-              ),
-
-            status:
-              "in_progress",
-
-            startedAt,
-
-            started_at:
-              startedAt,
-
-            deadlineAt,
-
-            deadline_at:
-              deadlineAt,
-          },
-
-          test: {
-            id:
-              testId,
-
-            title:
-              firstDefined(
-                testRow.title,
-                `Test ${testId}`
-              ),
-
-            categorySlug:
-              String(
-                firstDefined(
-                  category?.slug,
-                  ""
-                )
-              )
-                .trim()
-                .toLowerCase(),
-
-            isDpp:
-              String(
-                firstDefined(
-                  category?.slug,
-                  ""
-                )
-              )
-                .trim()
-                .toLowerCase() ===
-              "dpp",
-
-            isActive:
-              Number(
-                firstDefined(
-                  testRow.is_active,
-                  testRow.isActive,
-                  0
-                )
-              ) === 1,
-
-            isPublished:
-              toBoolean(
-                firstDefined(
-                  testRow.is_published,
-                  testRow.isPublished,
-                  0
-                )
-              ),
-          },
+          test:
+            buildTestMeta(
+              testRow,
+              category,
+              testId
+            ),
         },
         {
           status: 200,
+
+          headers: {
+            "Cache-Control":
+              "private, no-store, max-age=0",
+          },
         }
       );
     }
 
-    /* =======================================================
-       PHASE 5
-       
-       NEW ATTEMPT AVAILABILITY
-       
-       This is the FIRST place where the new-attempt flow
-       checks:
-       
-       - series.is_active
-       - category.is_active
-       - test.is_active
-       - test.is_published
-       
-       No active attempt exists at this point.
-    ======================================================= */
+    /* -------------------------------------------------------
+       AVAILABILITY FOR NEW ATTEMPT
+    ------------------------------------------------------- */
 
     const availability =
       await requireTestAvailability({
@@ -1741,16 +2083,7 @@ export async function POST(
     }
 
     /* -------------------------------------------------------
-       COUNT SUBMITTED ATTEMPTS
-
-       This is used ONLY to build the response payload
-       (submittedCount / remainingAttempts / the error
-       message text below). It is intentionally NOT the
-       thing that decides whether a new attempt is allowed —
-       that decision now happens atomically inside the
-       INSERT itself (see ATOMIC CREATE ATTEMPT below), so
-       two parallel "start test" requests can no longer both
-       pass this check and both insert a row.
+       SUBMITTED ATTEMPT COUNT
     ------------------------------------------------------- */
 
     const submittedResult =
@@ -1758,9 +2091,7 @@ export async function POST(
         sql: `
           SELECT
             COUNT(*) AS count
-
           FROM ${config.attemptTable}
-
           WHERE
             user_id = ?
             AND test_id = ?
@@ -1779,104 +2110,125 @@ export async function POST(
           ?.count || 0
       );
 
-    const maxAttempts =
-      3;
+    if (
+      submittedCount >=
+      MAX_ATTEMPTS
+    ) {
+      return jsonError(
+        "You have already completed the maximum 3 attempts for this test.",
+        403,
+        "ATTEMPTS_EXHAUSTED"
+      );
+    }
 
-    /* =======================================================
-       TIMER
-    ======================================================= */
+    /* -------------------------------------------------------
+       TIMER MODE
+    ------------------------------------------------------- */
 
-    const categorySlug =
-      String(
-        firstDefined(
-          category?.slug,
-          ""
-        )
-      )
-        .trim()
-        .toLowerCase();
+    const liveEvent =
+      await findCurrentLiveEvent(
+        config,
+        testId
+      );
 
-    const isDpp =
-      categorySlug ===
-      "dpp";
+    const isLive =
+      Boolean(
+        liveEvent
+      );
+
+    const eventId =
+      isLive
+        ? Number(
+            liveEvent.id
+          )
+        : null;
 
     const durationMinutes =
       Number(
         firstDefined(
-          testRow.duration_minutes,
-          testRow.durationMinutes,
+          isLive
+            ? liveEvent.duration_minutes
+            : testRow.duration_minutes,
           0
         )
+      );
+
+    const durationSeconds =
+      Math.max(
+        0,
+        durationMinutes *
+          60
       );
 
     let deadlineAt =
       null;
 
+    /*
+     * LIVE:
+     * fixed event deadline.
+     *
+     * SELF-PACED:
+     * virtual deadline from current remaining active time.
+     * It will be shifted whenever pause/resume/heartbeat
+     * updates the attempt.
+     */
+
     if (
-      !isDpp &&
-      Number.isFinite(
-        durationMinutes
-      ) &&
-      durationMinutes >
-        0
+      durationSeconds > 0
     ) {
-      const deadlineResult =
-        await db.execute({
-          sql: `
-            SELECT
-              datetime(
-                CURRENT_TIMESTAMP,
-                '+' || ? || ' minutes'
-              ) AS deadline_at
-          `,
+      if (
+        isLive
+      ) {
+        const deadlineResult =
+          await db.execute({
+            sql: `
+              SELECT
+                datetime(
+                  ?,
+                  '+' || ? || ' minutes'
+                ) AS deadline_at
+            `,
 
-          args: [
-            durationMinutes,
-          ],
-        });
+            args: [
+              liveEvent.start_at,
+              Number(
+                liveEvent.duration_minutes
+              ),
+            ],
+          });
 
-      deadlineAt =
-        deadlineResult.rows?.[0]
-          ?.deadline_at ||
-        null;
+        deadlineAt =
+          deadlineResult
+            .rows?.[0]
+            ?.deadline_at ||
+          null;
+      } else {
+        const deadlineResult =
+          await db.execute({
+            sql: `
+              SELECT
+                datetime(
+                  CURRENT_TIMESTAMP,
+                  '+' || ? || ' seconds'
+                ) AS deadline_at
+            `,
+
+            args: [
+              durationSeconds,
+            ],
+          });
+
+        deadlineAt =
+          deadlineResult
+            .rows?.[0]
+            ?.deadline_at ||
+          null;
+      }
     }
 
-       /* =======================================================
-       ATOMIC CREATE ATTEMPT
-
-       SECURITY FIX (race condition):
-
-       Previously this was 3 separate round trips:
-         1) SELECT to check no active in_progress attempt
-         2) SELECT COUNT to check submitted < maxAttempts
-         3) SELECT MAX(attempt_number) to pick the next number
-         4) INSERT the new attempt
-
-       Two parallel "start test" requests (double-click,
-       two tabs, flaky retry) could both pass steps 1-3
-       before either finished step 4, letting a student end
-       up with more in_progress/total attempts than allowed.
-
-       Fix:
-
-       All of the gating logic (no existing in_progress
-       attempt + submitted count under the limit) AND the
-       next attempt_number calculation now live inside a
-       single INSERT ... SELECT statement. The next number
-       is computed in a derived subquery ("next_num"), and
-       the gating conditions sit in a plain WHERE on the
-       outer SELECT (Turso's SQL parser rejects a bare
-       HAVING without GROUP BY, so this avoids that).
-
-       SQLite/Turso only ever runs one write at a time per
-       database, so this whole statement is evaluated and
-       applied as one atomic unit — a second, concurrent
-       request cannot slip in between the check and the
-       insert anymore. If the WHERE condition is false
-       (an in_progress attempt now exists, or the submitted
-       count is already at the limit), the SELECT yields
-       zero rows and the INSERT inserts nothing.
-    ======================================================= */
+    /* -------------------------------------------------------
+       ATOMIC INSERT
+    ------------------------------------------------------- */
 
     const insertResult =
       await db.execute({
@@ -1884,58 +2236,7 @@ export async function POST(
           INSERT INTO ${config.attemptTable} (
             user_id,
             test_id,
-            attempt_number,
-            status,
-            started_at,
-            total_marks,
-            deadline_at,
-            created_at
-          )
-
-          SELECT
-            ? AS user_id,
-            ? AS test_id,
-            next_num.val AS attempt_number,
-            'in_progress' AS status,
-            CURRENT_TIMESTAMP AS started_at,
-            ? AS total_marks,
-            ? AS deadline_at,
-            CURRENT_TIMESTAMP AS created_at
-
-          FROM (
-            SELECT
-              COALESCE(
-                MAX(attempt_number),
-                0
-              ) + 1 AS val
-            FROM ${config.attemptTable}
-            WHERE
-              user_id = ?
-              AND test_id = ?
-          ) AS next_num
-
-          WHERE
-            NOT EXISTS (
-              SELECT 1
-              FROM ${config.attemptTable}
-              WHERE
-                user_id = ?
-                AND test_id = ?
-                AND status = 'in_progress'
-            )
-            AND (
-              SELECT COUNT(*)
-              FROM ${config.attemptTable}
-              WHERE
-                user_id = ?
-                AND test_id = ?
-                AND status = 'submitted'
-            ) < ?
-
-          RETURNING
-            id,
-            user_id,
-            test_id,
+            event_id,
             attempt_number,
             status,
             started_at,
@@ -1946,9 +2247,86 @@ export async function POST(
             wrong_count,
             unanswered_count,
             time_taken_seconds,
-            created_at,
-            event_id,
-            deadline_at
+            deadline_at,
+            active_seconds,
+            last_active_at,
+            created_at
+          )
+
+          SELECT
+            ?,
+            ?,
+
+            ?,
+
+            COALESCE(
+              (
+                SELECT
+                  MAX(
+                    attempt_number
+                  )
+                FROM ${config.attemptTable}
+                WHERE
+                  user_id = ?
+                  AND test_id = ?
+              ),
+              0
+            ) + 1,
+
+            'in_progress',
+
+            CURRENT_TIMESTAMP,
+
+            NULL,
+
+            NULL,
+
+            ?,
+
+            0,
+
+            0,
+
+            0,
+
+            0,
+
+            ?,
+
+            0,
+
+            CASE
+              WHEN ? = 0
+                THEN CURRENT_TIMESTAMP
+              ELSE NULL
+            END,
+
+            CURRENT_TIMESTAMP
+
+          WHERE
+            NOT EXISTS (
+              SELECT
+                1
+              FROM ${config.attemptTable}
+              WHERE
+                user_id = ?
+                AND test_id = ?
+                AND status =
+                  'in_progress'
+            )
+
+            AND (
+              SELECT
+                COUNT(*)
+              FROM ${config.attemptTable}
+              WHERE
+                user_id = ?
+                AND test_id = ?
+                AND status =
+                  'submitted'
+            ) < ?
+
+          RETURNING *
         `,
 
         args: [
@@ -1956,59 +2334,58 @@ export async function POST(
 
           testId,
 
-          Number(
+          eventId,
+
+          userId,
+
+          testId,
+
+          toNumber(
             firstDefined(
               testRow.total_marks,
               testRow.totalMarks,
               0
-            )
+            ),
+            0
           ),
 
           deadlineAt,
 
-          userId,
-
-          testId,
-
-          userId,
-
-          testId,
+          isLive
+            ? 1
+            : 0,
 
           userId,
 
           testId,
 
-          maxAttempts,
+          userId,
+
+          testId,
+
+          MAX_ATTEMPTS,
         ],
       });
 
-    if (
-      !insertResult.rows ||
-      insertResult.rows.length ===
-        0
-    ) {
-      /* -----------------------------------------------------
-         The atomic insert produced no row. Find out why so
-         we can respond correctly instead of a raw 500 —
-         either a concurrent request just created/holds an
-         in_progress attempt (race lost -> resume it), or the
-         submitted-attempt limit is genuinely exhausted.
-      ----------------------------------------------------- */
+    /* -------------------------------------------------------
+       ATOMIC INSERT DID NOT CREATE
+    ------------------------------------------------------- */
 
-      const raceCheckResult =
+    if (
+      !insertResult.rows?.[0]
+    ) {
+      const retry =
         await db.execute({
           sql: `
             SELECT *
             FROM ${config.attemptTable}
-
             WHERE
               user_id = ?
               AND test_id = ?
-              AND status = 'in_progress'
-
+              AND status =
+                'in_progress'
             ORDER BY
               id DESC
-
             LIMIT 1
           `,
 
@@ -2018,102 +2395,34 @@ export async function POST(
           ],
         });
 
-      const raceActiveAttempt =
-        raceCheckResult.rows?.[0] ||
-        null;
+      const raceAttempt =
+        retry.rows?.[0];
 
-      if (raceActiveAttempt) {
-        const startedAt =
-          toIsoUtc(
-            raceActiveAttempt.started_at
-          );
-
-        const raceDeadlineAt =
-          toIsoUtc(
-            raceActiveAttempt.deadline_at
-          );
-
-        console.log(
-          `[attempt POST] RACE-LOST ${series}/${testId} attempt=${raceActiveAttempt.id} -> resume`
-        );
-
+      if (
+        raceAttempt
+      ) {
         return NextResponse.json(
           {
             success: true,
 
-            resumed: true,
+            resumed:
+              true,
 
             mode:
               "resume",
 
-            attempt: {
-              id:
-                Number(
-                  raceActiveAttempt.id
-                ),
+            attempt:
+              serializeAttempt(
+                raceAttempt,
+                testRow
+              ),
 
-              userId:
-                Number(
-                  raceActiveAttempt.user_id
-                ),
-
-              testId:
-                Number(
-                  raceActiveAttempt.test_id
-                ),
-
-              attemptNumber:
-                Number(
-                  raceActiveAttempt.attempt_number
-                ),
-
-              status:
-                "in_progress",
-
-              startedAt,
-
-              started_at:
-                startedAt,
-
-              deadlineAt:
-                raceDeadlineAt,
-
-              deadline_at:
-                raceDeadlineAt,
-            },
-
-            test: {
-              id:
-                testId,
-
-              title:
-                firstDefined(
-                  testRow.title,
-                  `Test ${testId}`
-                ),
-
-              categorySlug,
-
-              isDpp,
-
-              isActive:
-                Number(
-                  firstDefined(
-                    testRow.is_active,
-                    testRow.isActive,
-                    0
-                  )
-                ) === 1,
-
-              isPublished:
-                toBoolean(
-                  firstDefined(
-                    testRow.is_published,
-                    testRow.isPublished,
-                    0
-                  )
-                ),
-            },
+            test:
+              buildTestMeta(
+                testRow,
+                category,
+                testId
+              ),
           },
           {
             status: 200,
@@ -2131,205 +2440,47 @@ export async function POST(
     const attempt =
       insertResult.rows[0];
 
-    const startedAt =
-      toIsoUtc(
-        attempt.started_at
-      );
-
-    const normalizedDeadlineAt =
-      toIsoUtc(
-        attempt.deadline_at
-      );
-
-    if (!startedAt) {
-      return jsonError(
-        "Invalid attempt start time.",
-        500,
-        "INVALID_START_TIME"
-      );
-    }
-
-    console.log(
-      `[attempt POST] NEW ${series}/${testId} attempt=${attempt.id} attemptNumber=${attempt.attempt_number} dpp=${isDpp} deadline=${normalizedDeadlineAt || "none"}`
-    );
-
-    /* =======================================================
-       FINAL RESPONSE
-    ======================================================= */
-
     return NextResponse.json(
       {
         success: true,
 
-        resumed: false,
+        resumed:
+          false,
 
         mode:
           "new",
 
-        attempt: {
-          id:
-            Number(
-              attempt.id
-            ),
-
-          userId:
-            Number(
-              attempt.user_id
-            ),
-
-          testId:
-            Number(
-              attempt.test_id
-            ),
-
-          attemptNumber:
-            Number(
-              attempt.attempt_number
-            ),
-
-          attempt_number:
-            Number(
-              attempt.attempt_number
-            ),
-
-          status:
-            "in_progress",
-
-          startedAt,
-
-          started_at:
-            startedAt,
-
-          submittedAt:
-            toIsoUtc(
-              attempt.submitted_at
-            ),
-
-          submitted_at:
-            toIsoUtc(
-              attempt.submitted_at
-            ),
-
-          score:
-            attempt.score ===
-            null
-              ? null
-              : Number(
-                  attempt.score
-                ),
-
-          totalMarks:
-            Number(
-              firstDefined(
-                attempt.total_marks,
-                testRow.total_marks,
-                0
-              )
-            ),
-
-          correctCount:
-            Number(
-              attempt.correct_count ||
-                0
-            ),
-
-          wrongCount:
-            Number(
-              attempt.wrong_count ||
-                0
-            ),
-
-          unansweredCount:
-            Number(
-              attempt.unanswered_count ||
-                0
-            ),
-
-          timeTakenSeconds:
-            Number(
-              attempt.time_taken_seconds ||
-                0
-            ),
-
-          createdAt:
-            toIsoUtc(
-              attempt.created_at
-            ),
-
-          eventId:
-            attempt.event_id ===
-              null ||
-            attempt.event_id ===
-              undefined
-              ? null
-              : Number(
-                  attempt.event_id
-                ),
-
-          deadlineAt:
-            normalizedDeadlineAt,
-
-          deadline_at:
-            normalizedDeadlineAt,
-        },
+        attempt:
+          serializeAttempt(
+            attempt,
+            testRow
+          ),
 
         submittedCount,
 
-        maxAttempts,
+        maxAttempts:
+          MAX_ATTEMPTS,
 
         remainingAttempts:
           Math.max(
             0,
-            maxAttempts -
+            MAX_ATTEMPTS -
               submittedCount
           ),
 
         test: {
-          id:
-            testId,
+          ...buildTestMeta(
+            testRow,
+            category,
+            testId
+          ),
 
-          title:
-            firstDefined(
-              testRow.title,
-              `Test ${testId}`
-            ),
+          timerMode:
+            isLive
+              ? "live"
+              : "active",
 
-          totalQuestions:
-            Number(
-              firstDefined(
-                testRow.total_questions,
-                0
-              )
-            ),
-
-          totalMarks:
-            Number(
-              firstDefined(
-                testRow.total_marks,
-                0
-              )
-            ),
-
-          durationMinutes,
-
-          categorySlug,
-
-          categoryName:
-            category?.name ||
-            null,
-
-          isDpp,
-
-          /*
-           * New attempt passed all Phase 5
-           * availability checks.
-           */
-
-          isActive:
-            true,
-
-          isPublished:
-            true,
+          eventId,
 
           availabilityValidated:
             true,

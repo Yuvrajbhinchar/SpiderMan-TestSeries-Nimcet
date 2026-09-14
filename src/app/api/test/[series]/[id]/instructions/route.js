@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { db } from "@/lib/turso";
+import { getCurrentUser } from "@/lib/auth";
 
 import {
   SERIES_CONFIG,
@@ -10,16 +11,22 @@ import {
   toNumber,
   toBoolean,
   jsonError,
-  requireAuthenticatedUser,
   requireSeriesAccess,
   getTestById,
-  getTestCategory,
   requireTestAvailability,
 } from "@/lib/testSecurity";
 
 /* =========================================================
    GET
    /api/test/[series]/[id]/instructions
+
+   IMPORTANT:
+   - Authentication is JWT-only.
+   - No users table lookup.
+   - No active_session_id / active_device_id lookup.
+   - No questions query.
+   - No options query.
+   - Only test + availability + sections are loaded.
 ========================================================= */
 
 export async function GET(
@@ -51,9 +58,7 @@ export async function GET(
     ------------------------------------------------------- */
 
     if (
-      !SERIES_CONFIG[
-        series
-      ]
+      !SERIES_CONFIG[series]
     ) {
       return jsonError(
         "Invalid test series.",
@@ -71,36 +76,36 @@ export async function GET(
     }
 
     /* -------------------------------------------------------
-       AUTH
+       JWT-ONLY AUTH
        
-       Centralized:
-       - JWT
-       - user existence
-       - account active
-       - active session
-       - active device
+       getCurrentUser():
+       - reads auth cookie
+       - verifies JWT
+       - validates JWT payload
+       
+       IMPORTANT:
+       It does NOT query users table.
     ------------------------------------------------------- */
 
-    const auth =
-      await requireAuthenticatedUser();
+    const currentUser =
+      await getCurrentUser();
 
-    if (!auth.ok) {
-      return auth.response;
+    if (
+      !currentUser?.id
+    ) {
+      return jsonError(
+        "Please login to continue.",
+        401,
+        "UNAUTHORIZED"
+      );
     }
-
-    const {
-      currentUser,
-    } = auth;
 
     /* -------------------------------------------------------
        SERIES ACCESS
        
-       IMPORTANT:
+       Paid-series entitlement comes from verified JWT.
        
-       Paid series entitlement comes from the verified
-       JWT snapshot.
-       
-       No user_series_access entitlement query.
+       No user_series_access query.
     ------------------------------------------------------- */
 
     const access =
@@ -116,7 +121,7 @@ export async function GET(
     /* -------------------------------------------------------
        TEST
        
-       Centralized test lookup.
+       One DB read.
     ------------------------------------------------------- */
 
     const testResult =
@@ -135,27 +140,19 @@ export async function GET(
     } = testResult;
 
     /* -------------------------------------------------------
-       PHASE 5
+       AVAILABILITY
        
-       CENTRAL AVAILABILITY CHECK
+       Server-side availability still checks:
+       - series active
+       - category active
+       - test published
        
-       Checks:
-       
-       1. Series is active
-       2. Category is active
-       3. Test is active
-       4. Test is published
-       
-       IMPORTANT:
-       
-       This route is for starting the test/instructions,
-       so inactive/unpublished tests are blocked here.
+       This is NOT user entitlement checking.
     ------------------------------------------------------- */
 
     const availability =
       await requireTestAvailability({
         config,
-
         test:
           testRow,
       });
@@ -164,22 +161,17 @@ export async function GET(
       return availability.response;
     }
 
-    /* -------------------------------------------------------
-       CATEGORY
-       
-       We already fetched it inside availability, but keep
-       the existing helper call because this route needs the
-       category metadata for the response.
-    ------------------------------------------------------- */
-
     const category =
-      await getTestCategory(
-        testRow
-      );
+      availability.category ||
+      null;
 
-    /* -------------------------------------------------------
+    const seriesState =
+      availability.series ||
+      null;
+
+    /* =======================================================
        CATEGORY / MODE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const categorySlug =
       String(
@@ -201,367 +193,362 @@ export async function GET(
       categorySlug ===
       "dpp";
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SERIES META
        
-       Presentation metadata only.
-    ------------------------------------------------------- */
-
-    let seriesMeta =
-      null;
-
-    try {
-      const seriesResult =
-        await db.execute({
-          sql: `
-            SELECT
-              id,
-              name,
-              slug,
-              is_paid,
-              is_active
-            FROM test_series
-            WHERE id = ?
-            LIMIT 1
-          `,
-
-          args: [
-            config.seriesId,
-          ],
-        });
-
-      seriesMeta =
-        seriesResult.rows?.[0] ||
-        null;
-    } catch (error) {
-      /*
-       * Optional metadata failure should not crash the
-       * instructions response.
-       */
-      console.warn(
-        "[instructions] Series metadata lookup failed:",
-        error
-      );
-    }
-
-    /* =======================================================
-       QUESTIONS
+       Already returned by requireTestAvailability().
+       
+       No second test_series query.
     ======================================================= */
 
-    const questionResult =
+    const seriesName =
+      firstDefined(
+        seriesState?.name,
+        null
+      );
+
+    const seriesSlug =
+      firstDefined(
+        seriesState?.slug,
+        series
+      );
+
+    const seriesIsPaid =
+      toBoolean(
+        firstDefined(
+          seriesState?.is_paid,
+          seriesState?.isPaid,
+          series !== "free"
+            ? 1
+            : 0
+        )
+      );
+
+    const seriesIsActive =
+      seriesState
+        ? Number(
+            firstDefined(
+              seriesState?.is_active,
+              seriesState?.isActive,
+              0
+            )
+          ) === 1
+        : true;
+
+    const categoryIsActive =
+      category
+        ? Number(
+            firstDefined(
+              category?.is_active,
+              category?.isActive,
+              0
+            )
+          ) === 1
+        : true;
+
+    /* =======================================================
+       SECTIONS
+       
+       IMPORTANT:
+       We only fetch section configuration.
+       
+       No questions.
+       No options.
+       No explanations.
+       No correct answers.
+    ======================================================= */
+
+    const sectionResult =
       await db.execute({
         sql: `
           SELECT
             id,
             test_id,
-            section_id,
-            question_text,
-            explanation,
-            question_type,
-            marks,
-            negative_marks,
-            question_order,
-            question_image_url
-
-          FROM ${config.questionTable}
-
-          WHERE
-            test_id = ?
-
+            section_name,
+            section_order,
+            duration_minutes,
+            question_count,
+            is_sequential,
+            timer_group
+          FROM ${config.sectionTable}
+          WHERE test_id = ?
           ORDER BY
-            question_order ASC,
+            section_order ASC,
             id ASC
         `,
-
         args: [
           testId,
         ],
       });
 
-    const rawQuestions =
+    const rawSections =
       Array.isArray(
-        questionResult.rows
+        sectionResult.rows
       )
-        ? questionResult.rows
+        ? sectionResult.rows
         : [];
 
-    if (
-      rawQuestions.length ===
-      0
-    ) {
-      return jsonError(
-        "No questions were found for this test.",
-        422,
-        "NO_QUESTIONS"
+    /* =======================================================
+       SECTION RESPONSE
+       
+       IMPORTANT:
+       We use stored section.question_count.
+       
+       We DO NOT scan question table just to calculate
+       section marks because that would defeat the purpose
+       of making instructions lightweight.
+       
+       Since the section table has no marks columns, the
+       test-level values are used as the fallback.
+    ======================================================= */
+
+    const testPositiveMarks =
+      toNumber(
+        firstDefined(
+          testRow?.positive_marks,
+          testRow?.positiveMarks,
+          0
+        ),
+        0
       );
-    }
 
-    /* =======================================================
-       OPTIONS
-    ======================================================= */
-
-    const questionIds =
-      rawQuestions
-        .map(
-          (
-            question
-          ) =>
-            Number(
-              question.id
-            )
-        )
-        .filter(
-          (
-            questionId
-          ) =>
-            Number.isInteger(
-              questionId
-            ) &&
-            questionId > 0
-        );
-
-    let rawOptions =
-      [];
-
-    if (
-      questionIds.length >
-      0
-    ) {
-      const placeholders =
-        questionIds
-          .map(
-            () => "?"
-          )
-          .join(",");
-
-      const optionResult =
-        await db.execute({
-          sql: `
-            SELECT
-              id,
-              question_id,
-              option_label,
-              option_text,
-              option_order
-
-            FROM ${config.optionTable}
-
-            WHERE
-              question_id IN (${placeholders})
-
-            ORDER BY
-              question_id ASC,
-              option_order ASC,
-              id ASC
-          `,
-
-          args:
-            questionIds,
-        });
-
-      rawOptions =
-        Array.isArray(
-          optionResult.rows
-        )
-          ? optionResult.rows
-          : [];
-    }
-
-    /* =======================================================
-       OPTIONS BY QUESTION
-    ======================================================= */
-
-    const optionsByQuestion =
-      new Map();
-
-    for (
-      const option of
-        rawOptions
-    ) {
-      const questionId =
-        Number(
-          firstDefined(
-            option.question_id,
-            option.questionId
-          )
-        );
-
-      if (
-        !Number.isInteger(
-          questionId
-        ) ||
-        questionId <= 0
-      ) {
-        continue;
-      }
-
-      if (
-        !optionsByQuestion.has(
-          questionId
-        )
-      ) {
-        optionsByQuestion.set(
-          questionId,
-          []
-        );
-      }
-
-      optionsByQuestion
-        .get(
-          questionId
-        )
-        .push({
-          id:
-            Number(
-              option.id
-            ),
-
-          label:
-            firstDefined(
-              option.option_label,
-              option.optionLabel,
-              ""
-            ),
-
-          text:
-            firstDefined(
-              option.option_text,
-              option.optionText,
-              option.text,
-              ""
-            ),
-
-          optionOrder:
-            Number(
-              firstDefined(
-                option.option_order,
-                option.optionOrder,
-                0
-              )
-            ),
-        });
-    }
-
-    /* =======================================================
-       RESPONSE QUESTIONS
-    ======================================================= */
-
-    const questions =
-      rawQuestions.map(
-        (
-          question,
-          index
-        ) => ({
-          id:
-            Number(
-              question.id
-            ),
-
-          testId:
-            Number(
-              firstDefined(
-                question.test_id,
-                question.testId,
-                testId
-              )
-            ),
-
-          sectionId:
-            firstDefined(
-              question.section_id,
-              question.sectionId
-            ) === null
-              ? null
-              : Number(
-                  firstDefined(
-                    question.section_id,
-                    question.sectionId
-                  )
-                ),
-
-          questionText:
-            firstDefined(
-              question.question_text,
-              question.questionText,
-              question.text,
-              ""
-            ),
-
-          /* -------------------------------------------------
-             QUESTION IMAGE
-          ------------------------------------------------- */
-
-          questionImageUrl:
-            firstDefined(
-              question.question_image_url,
-              question.questionImageUrl,
-              null
-            ),
-
-          explanation:
-            firstDefined(
-              question.explanation,
-              null
-            ),
-
-          questionType:
-            String(
-              firstDefined(
-                question.question_type,
-                question.questionType,
-                "mcq"
-              )
-            )
-              .trim()
-              .toLowerCase(),
-
-          marks:
-            Number(
-              firstDefined(
-                question.marks,
-                0
-              )
-            ),
-
-          negativeMarks:
-            Number(
-              firstDefined(
-                question.negative_marks,
-                question.negativeMarks,
-                0
-              )
-            ),
-
-          /* -------------------------------------------------
-             STABLE QUESTION ORDER
-          ------------------------------------------------- */
-
-          questionOrder:
-            Number(
-              firstDefined(
-                question.question_order,
-                question.questionOrder,
-                index + 1
-              )
-            ),
-
-          number:
-            Number(
-              firstDefined(
-                question.question_order,
-                question.questionOrder,
-                index + 1
-              )
-            ),
-
-          options:
-            optionsByQuestion.get(
-              Number(
-                question.id
-              )
-            ) || [],
-        })
+    const testNegativeMarks =
+      toNumber(
+        firstDefined(
+          testRow?.negative_marks,
+          testRow?.negativeMarks,
+          0
+        ),
+        0
       );
+
+    const sections =
+      rawSections.map(
+        (section) => {
+          const sectionId =
+            Number(
+              firstDefined(
+                section?.id,
+                section?.section_id,
+                section?.sectionId
+              )
+            );
+
+          const sectionName =
+            firstDefined(
+              section?.section_name,
+              section?.sectionName,
+              `Section ${
+                firstDefined(
+                  section?.section_order,
+                  section?.sectionOrder,
+                  ""
+                )
+              }`.trim()
+            );
+
+          const sectionOrder =
+            Number(
+              firstDefined(
+                section?.section_order,
+                section?.sectionOrder,
+                0
+              )
+            );
+
+          const durationMinutes =
+            toNumber(
+              firstDefined(
+                section?.duration_minutes,
+                section?.durationMinutes,
+                0
+              ),
+              0
+            );
+
+          const questionCount =
+            toNumber(
+              firstDefined(
+                section?.question_count,
+                section?.questionCount,
+                0
+              ),
+              0
+            );
+
+          const isSequential =
+            toBoolean(
+              firstDefined(
+                section?.is_sequential,
+                section?.isSequential,
+                1
+              )
+            );
+
+          const timerGroup =
+            firstDefined(
+              section?.timer_group,
+              section?.timerGroup,
+              null
+            );
+
+          return {
+            id:
+              sectionId,
+
+            section_id:
+              sectionId,
+
+            test_id:
+              Number(testId),
+
+            testId:
+              Number(testId),
+
+            section_name:
+              sectionName,
+
+            sectionName:
+              sectionName,
+
+            section_order:
+              sectionOrder,
+
+            sectionOrder:
+              sectionOrder,
+
+            duration_minutes:
+              durationMinutes,
+
+            durationMinutes:
+              durationMinutes,
+
+            question_count:
+              questionCount,
+
+            questionCount:
+              questionCount,
+
+            /*
+             * Kept for existing frontend compatibility.
+             *
+             * No question scan is performed.
+             */
+            positive_marks:
+              testPositiveMarks,
+
+            positiveMarks:
+              testPositiveMarks,
+
+            negative_marks:
+              testNegativeMarks,
+
+            negativeMarks:
+              testNegativeMarks,
+
+            is_sequential:
+              isSequential,
+
+            isSequential:
+              isSequential,
+
+            timer_group:
+              timerGroup,
+
+            timerGroup:
+              timerGroup,
+          };
+        }
+      );
+
+    /* =======================================================
+       TEST META
+    ======================================================= */
+
+    const durationMinutes =
+      toNumber(
+        firstDefined(
+          testRow?.duration_minutes,
+          testRow?.durationMinutes,
+          0
+        ),
+        0
+      );
+
+    const totalQuestions =
+      toNumber(
+        firstDefined(
+          testRow?.total_questions,
+          testRow?.totalQuestions,
+          0
+        ),
+        0
+      );
+
+    const totalMarks =
+      toNumber(
+        firstDefined(
+          testRow?.total_marks,
+          testRow?.totalMarks,
+          0
+        ),
+        0
+      );
+
+    const categoryIdValue =
+      firstDefined(
+        testRow?.category_id,
+        testRow?.categoryId
+      );
+
+    const categoryId =
+      categoryIdValue ===
+        null ||
+      categoryIdValue ===
+        undefined ||
+      categoryIdValue ===
+        ""
+        ? null
+        : Number(
+            categoryIdValue
+          );
+
+    const title =
+      firstDefined(
+        testRow?.title,
+        testRow?.name,
+        `Test ${testId}`
+      );
+
+    const slug =
+      firstDefined(
+        testRow?.slug,
+        null
+      );
+
+    const description =
+      firstDefined(
+        testRow?.description,
+        ""
+      );
+
+    const testIsActive =
+      Number(
+        firstDefined(
+          testRow?.is_active,
+          testRow?.isActive,
+          1
+        )
+      ) === 1;
+
+    const testIsPublished =
+      Number(
+        firstDefined(
+          testRow?.is_published,
+          testRow?.isPublished,
+          0
+        )
+      ) === 1;
 
     /* =======================================================
        TEST RESPONSE
@@ -575,139 +562,139 @@ export async function GET(
 
       series,
 
+      series_id:
+        config.seriesId,
+
       seriesId:
         config.seriesId,
 
+      series_name:
+        seriesName,
+
       seriesName:
-        firstDefined(
-          seriesMeta?.name,
-          null
-        ),
+        seriesName,
+
+      series_slug:
+        seriesSlug,
 
       seriesSlug:
-        firstDefined(
-          seriesMeta?.slug,
-          series
-        ),
+        seriesSlug,
+
+      series_is_paid:
+        seriesIsPaid,
 
       seriesIsPaid:
-        toBoolean(
-          firstDefined(
-            seriesMeta?.is_paid,
-            seriesMeta?.isPaid,
-            series !== "free"
-              ? 1
-              : 0
-          )
-        ),
+        seriesIsPaid,
 
-      /*
-       * Phase 5 state information.
-       */
+      series_is_active:
+        seriesIsActive,
 
       seriesIsActive:
-        seriesMeta
-          ? Number(
-              seriesMeta.is_active
-            ) === 1
-          : true,
+        seriesIsActive,
+
+      test_is_active:
+        testIsActive,
 
       testIsActive:
-        Number(
-          firstDefined(
-            testRow.is_active,
-            testRow.isActive,
-            0
-          )
-        ) === 1,
+        testIsActive,
+
+      is_published:
+        testIsPublished,
 
       isPublished:
-        Number(
-          firstDefined(
-            testRow.is_published,
-            testRow.isPublished,
-            0
-          )
-        ) === 1,
+        testIsPublished,
 
-      title:
-        firstDefined(
-          testRow.title,
-          testRow.name,
-          `Test ${testId}`
-        ),
+      title,
 
-      slug:
-        firstDefined(
-          testRow.slug,
-          null
-        ),
+      slug,
 
-      description:
-        firstDefined(
-          testRow.description,
-          ""
-        ),
+      description,
+
+      duration_minutes:
+        durationMinutes,
 
       durationMinutes:
-        toNumber(
-          firstDefined(
-            testRow.duration_minutes,
-            testRow.durationMinutes,
-            0
-          ),
-          0
-        ),
+        durationMinutes,
+
+      total_duration_minutes:
+        durationMinutes,
+
+      totalDurationMinutes:
+        durationMinutes,
+
+      total_questions:
+        totalQuestions,
 
       totalQuestions:
-        toNumber(
-          firstDefined(
-            testRow.total_questions,
-            testRow.totalQuestions,
-            questions.length
-          ),
-          questions.length
-        ),
+        totalQuestions,
+
+      total_marks:
+        totalMarks,
 
       totalMarks:
-        toNumber(
-          firstDefined(
-            testRow.total_marks,
-            testRow.totalMarks,
-            0
-          ),
-          0
-        ),
+        totalMarks,
+
+      positive_marks:
+        testPositiveMarks,
+
+      positiveMarks:
+        testPositiveMarks,
+
+      negative_marks:
+        testNegativeMarks,
+
+      negativeMarks:
+        testNegativeMarks,
+
+      category_id:
+        categoryId,
 
       categoryId:
-        firstDefined(
-          testRow.category_id,
-          testRow.categoryId
-        ) === null
-          ? null
-          : Number(
-              firstDefined(
-                testRow.category_id,
-                testRow.categoryId
-              )
-            ),
+        categoryId,
 
-      categoryName,
+      category_name:
+        categoryName,
 
-      categorySlug,
+      categoryName:
+        categoryName,
+
+      category_slug:
+        categorySlug,
+
+      categorySlug:
+        categorySlug,
+
+      category_is_active:
+        categoryIsActive,
 
       categoryIsActive:
-        category
-          ? Number(
-              category.is_active
-            ) === 1
-          : true,
+        categoryIsActive,
+
+      is_dpp:
+        isDpp,
 
       isDpp,
+
+      /*
+       * Section timing is the important instructions data.
+       */
+      sections,
+
+      section_list:
+        sections,
     };
 
     /* =======================================================
        RESPONSE
+       
+       IMPORTANT:
+       There is intentionally NO:
+         questions
+         options
+         explanation
+         is_correct
+       
+       Attempt page is responsible for loading questions.
     ======================================================= */
 
     return NextResponse.json(
@@ -716,8 +703,6 @@ export async function GET(
 
         test:
           testResponse,
-
-        questions,
 
         meta: {
           series,
@@ -728,10 +713,10 @@ export async function GET(
           testId,
 
           questionCount:
-            questions.length,
+            totalQuestions,
 
-          optionCount:
-            rawOptions.length,
+          sectionCount:
+            sections.length,
 
           categorySlug,
 
@@ -741,16 +726,16 @@ export async function GET(
 
           availability: {
             seriesActive:
-              true,
+              seriesIsActive,
 
             categoryActive:
-              true,
+              categoryIsActive,
 
             testActive:
-              true,
+              testIsActive,
 
             published:
-              true,
+              testIsPublished,
           },
         },
       },

@@ -8,29 +8,70 @@ import {
   normalizeId,
   toNumber,
   firstDefined,
-  jsonError,
   requireAuthenticatedUser,
   requireSeriesAccess,
   getTestById,
-  getTestCategory,
 } from "@/lib/testSecurity";
 
 /* =========================================================
-   DATE HELPER
+   DATE HELPERS
 ========================================================= */
 
-function toIsoUtc(value) {
+function parseDatabaseDate(
+  value
+) {
+  if (!value) {
+    return NaN;
+  }
+
+  const text =
+    String(value).trim();
+
+  if (!text) {
+    return NaN;
+  }
+
+  /*
+   * Turso / SQLite:
+   * YYYY-MM-DD HH:mm:ss
+   */
+  if (
+    text.length === 19 &&
+    text[4] === "-" &&
+    text[7] === "-" &&
+    text[10] === " " &&
+    text[13] === ":" &&
+    text[16] === ":"
+  ) {
+    return new Date(
+      `${text.replace(
+        " ",
+        "T"
+      )}Z`
+    ).getTime();
+  }
+
+  const timestamp =
+    new Date(
+      text
+    ).getTime();
+
+  return Number.isFinite(
+    timestamp
+  )
+    ? timestamp
+    : NaN;
+}
+
+function toIsoUtc(
+  value
+) {
   if (!value) {
     return null;
   }
 
-  const text = String(value);
-
-  /*
-   * Turso / SQLite:
-   *
-   * YYYY-MM-DD HH:mm:ss
-   */
+  const text =
+    String(value);
 
   if (
     text.length === 19 &&
@@ -47,7 +88,9 @@ function toIsoUtc(value) {
   }
 
   const date =
-    new Date(text);
+    new Date(
+      text
+    );
 
   if (
     Number.isNaN(
@@ -58,6 +101,73 @@ function toIsoUtc(value) {
   }
 
   return date.toISOString();
+}
+
+/* =========================================================
+   TIMER HELPERS
+========================================================= */
+
+function isLiveAttempt(
+  eventId
+) {
+  return (
+    Number(
+      eventId || 0
+    ) > 0
+  );
+}
+
+function calculateActiveSeconds(
+  storedSeconds,
+  lastActiveAt
+) {
+  const stored =
+    Math.max(
+      0,
+      Number(
+        storedSeconds || 0
+      )
+    );
+
+  /*
+   * NULL means the self-paced attempt is paused.
+   */
+  if (!lastActiveAt) {
+    return Math.floor(
+      stored
+    );
+  }
+
+  const timestamp =
+    parseDatabaseDate(
+      lastActiveAt
+    );
+
+  if (
+    !Number.isFinite(
+      timestamp
+    )
+  ) {
+    return Math.floor(
+      stored
+    );
+  }
+
+  const additional =
+    Math.max(
+      0,
+      Math.floor(
+        (
+          Date.now() -
+          timestamp
+        ) / 1000
+      )
+    );
+
+  return Math.floor(
+    stored +
+      additional
+  );
 }
 
 /* =========================================================
@@ -113,10 +223,6 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
-       CENTRAL CONFIG
-    ------------------------------------------------------- */
-
     const config =
       SERIES_CONFIG[
         series
@@ -125,14 +231,8 @@ export async function POST(
     /* -------------------------------------------------------
        AUTH
        
-       Centralized in testSecurity.js
-       
-       This now checks:
-       - JWT
-       - DB user
-       - account active
-       - active session
-       - active device
+       Actual attempt submission remains protected by:
+       JWT + server-side user/session/device validation.
     ------------------------------------------------------- */
 
     const auth =
@@ -150,12 +250,7 @@ export async function POST(
     /* -------------------------------------------------------
        SERIES ACCESS
        
-       IMPORTANT:
-       
-       Paid access is checked from the verified JWT
-       snapshot through testSecurity.js.
-       
-       No user_series_access entitlement query here.
+       Paid entitlement comes from verified JWT.
     ------------------------------------------------------- */
 
     const access =
@@ -170,12 +265,6 @@ export async function POST(
 
     /* -------------------------------------------------------
        BODY
-       
-       Current frontend sends:
-       
-       {
-         attemptId: Number(...)
-       }
     ------------------------------------------------------- */
 
     const body =
@@ -217,23 +306,10 @@ export async function POST(
     } = testResult;
 
     /* -------------------------------------------------------
-       CATEGORY
-
-       Kept available so existing behaviour remains intact
-       if category-dependent logic is needed later.
-    ------------------------------------------------------- */
-
-    const category =
-      await getTestCategory(
-        testRow
-      );
-
-    /* -------------------------------------------------------
        ATTEMPT
        
-       Verify:
-       - attempt belongs to current user
-       - attempt belongs to current test
+       IMPORTANT:
+       Timer fields are now included.
     ------------------------------------------------------- */
 
     const attemptResult =
@@ -243,11 +319,14 @@ export async function POST(
             id,
             user_id,
             test_id,
+            event_id,
             attempt_number,
             status,
             started_at,
             submitted_at,
             deadline_at,
+            active_seconds,
+            last_active_at,
             score,
             total_marks,
             correct_count,
@@ -255,11 +334,14 @@ export async function POST(
             unanswered_count,
             time_taken_seconds,
             created_at
+
           FROM ${config.attemptTable}
+
           WHERE
             id = ?
             AND user_id = ?
             AND test_id = ?
+
           LIMIT 1
         `,
 
@@ -298,53 +380,183 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
-       EXPIRY
-       
-       DPP:
-       deadline_at is normally NULL.
-       
-       Mini / Mock:
-       deadline_at can exist.
-    ------------------------------------------------------- */
+    /* =======================================================
+       TIMER / EXPIRY
+    ======================================================= */
+
+    const live =
+      isLiveAttempt(
+        attempt.event_id
+      );
 
     const now =
       new Date();
 
-    const deadlineIso =
-      toIsoUtc(
-        attempt.deadline_at
-      );
+    let finalTimeTakenSeconds =
+      0;
 
-    const expired =
-      Boolean(
-        deadlineIso
-      ) &&
-      new Date(
-        deadlineIso
-      ).getTime() <=
-        now.getTime();
+    let expired =
+      false;
 
     /*
-     * DPP should never be force-expired simply because
-     * duration_minutes exists in the test row.
+     * -------------------------------------------------------
+     * LIVE TEST
+     * -------------------------------------------------------
      *
-     * Server trusts the attempt's actual deadline.
+     * Fixed wall-clock timer.
      */
 
-    const finalStatus =
-      expired
-        ? "auto_submitted"
-        : "submitted";
+    if (live) {
+      const deadlineTimestamp =
+        parseDatabaseDate(
+          attempt.deadline_at
+        );
 
-    /* -------------------------------------------------------
+      expired =
+        Number.isFinite(
+          deadlineTimestamp
+        ) &&
+        deadlineTimestamp <=
+          now.getTime();
+
+      /*
+       * For live tests, time_taken is based on
+       * started_at → submission time, capped by duration.
+       */
+
+      const startedTimestamp =
+        parseDatabaseDate(
+          attempt.started_at
+        );
+
+      const durationSeconds =
+        Math.max(
+          0,
+          toNumber(
+            firstDefined(
+              testRow?.duration_minutes,
+              testRow?.durationMinutes,
+              0
+            ),
+            0
+          ) * 60
+        );
+
+      if (
+        Number.isFinite(
+          startedTimestamp
+        )
+      ) {
+        const wallClockSeconds =
+          Math.max(
+            0,
+            Math.floor(
+              (
+                now.getTime() -
+                startedTimestamp
+              ) / 1000
+            )
+          );
+
+        finalTimeTakenSeconds =
+          durationSeconds > 0
+            ? Math.min(
+                wallClockSeconds,
+                durationSeconds
+              )
+            : wallClockSeconds;
+      } else {
+        finalTimeTakenSeconds =
+          Math.max(
+            0,
+            Number(
+              attempt.time_taken_seconds ||
+                0
+            )
+          );
+      }
+    }
+
+    /*
+     * -------------------------------------------------------
+     * SELF-PACED TEST
+     * -------------------------------------------------------
+     *
+     * active_seconds is authoritative.
+     *
+     * If last_active_at exists:
+     *   current active interval is added.
+     *
+     * If last_active_at is NULL:
+     *   timer is paused and no extra time is added.
+     */
+
+    else {
+      const durationSeconds =
+        Math.max(
+          0,
+          toNumber(
+            firstDefined(
+              testRow?.duration_minutes,
+              testRow?.durationMinutes,
+              0
+            ),
+            0
+          ) * 60
+        );
+
+      let currentActiveSeconds =
+        calculateActiveSeconds(
+          attempt.active_seconds,
+          attempt.last_active_at
+        );
+
+      if (
+        durationSeconds > 0
+      ) {
+        currentActiveSeconds =
+          Math.min(
+            currentActiveSeconds,
+            durationSeconds
+          );
+      }
+
+      finalTimeTakenSeconds =
+        Math.max(
+          0,
+          Math.floor(
+            currentActiveSeconds
+          )
+        );
+
+      /*
+       * Expiry is based only on active usage,
+       * NOT on deadline_at.
+       *
+       * This is what makes pause/resume work.
+       */
+
+      expired =
+        durationSeconds > 0 &&
+        currentActiveSeconds >=
+          durationSeconds;
+
+      /*
+       * Keep timer state final and paused before
+       * the final submission.
+       */
+      attempt.active_seconds =
+        finalTimeTakenSeconds;
+
+      attempt.last_active_at =
+        null;
+    }
+
+    /* =======================================================
        QUESTIONS + CORRECT OPTIONS + SAVED ANSWERS
        
-       Important:
-       
-       Correct answers are calculated entirely server-side.
-       No correct answer is exposed to the frontend.
-    ------------------------------------------------------- */
+       Correct answers NEVER reach the frontend.
+    ======================================================= */
 
     const questionsResult =
       await db.execute({
@@ -353,7 +565,6 @@ export async function POST(
             q.id AS question_id,
             q.marks,
             q.negative_marks,
-
             qo.id AS correct_option_id
 
           FROM ${config.questionTable} q
@@ -380,7 +591,8 @@ export async function POST(
       [];
 
     if (
-      questions.length === 0
+      questions.length ===
+      0
     ) {
       return jsonError(
         "This test has no questions.",
@@ -389,9 +601,9 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SAVED ANSWERS
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const answersResult =
       await db.execute({
@@ -453,9 +665,9 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        SCORE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     let score = 0;
 
@@ -466,8 +678,13 @@ export async function POST(
     let unansweredCount =
       0;
 
-    let totalTimeSeconds =
-      0;
+    /*
+     * Question-level answer time is still preserved
+     * separately from the master attempt timer.
+     *
+     * For result analytics we use the authoritative
+     * master timer as time_taken_seconds.
+     */
 
     const answerUpdates =
       [];
@@ -534,9 +751,6 @@ export async function POST(
             )
           )
         );
-
-      totalTimeSeconds +=
-        timeSpentSeconds;
 
       let isCorrect =
         null;
@@ -609,7 +823,7 @@ export async function POST(
       }
 
       /* -----------------------------------------------------
-         PREVIOUS CHECKPOINT FLAGS
+         CHECKPOINT FLAGS
       ----------------------------------------------------- */
 
       const visited =
@@ -633,7 +847,7 @@ export async function POST(
 
       const answeredAt =
         selectedOptionId !==
-        null
+          null
           ? answer?.answered_at ||
             now.toISOString()
           : null;
@@ -657,28 +871,20 @@ export async function POST(
       });
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        ROUND SCORE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const finalScore =
       Number(
-        Number(score).toFixed(2)
+        Number(
+          score
+        ).toFixed(2)
       );
 
-    /* -------------------------------------------------------
-       WRITE FINAL ANSWER STATE
-       
-       Checkpoint already created the answer rows.
-       
-       Here we finalize:
-       - is_correct
-       - marks_obtained
-       - answered_at
-       
-       We intentionally don't create fake answer rows for
-       questions that were never checkpointed.
-    ------------------------------------------------------- */
+    /* =======================================================
+       FINALIZE ANSWER STATE
+    ======================================================= */
 
     const answerStatements =
       [];
@@ -693,11 +899,8 @@ export async function POST(
         );
 
       /*
-       * No checkpoint row exists.
-       *
-       * This means no answer interaction was saved.
-       *
-       * We intentionally don't insert a fake row.
+       * Do not create fake answer rows for questions
+       * which were never checkpointed.
        */
 
       if (!existing) {
@@ -749,15 +952,9 @@ export async function POST(
       });
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        TOTAL MARKS
-
-       Prefer attempt.total_marks because the total was
-       already locked when the attempt was created.
-
-       Fallback:
-       test.total_marks
-    ------------------------------------------------------- */
+    ======================================================= */
 
     const totalMarks =
       toNumber(
@@ -768,44 +965,24 @@ export async function POST(
         )
       );
 
-    /* -------------------------------------------------------
-       SUBMIT ATTEMPT
+    /* =======================================================
+       FINAL STATUS
+       
+       auto_submitted when timer reached zero
+       otherwise normal submitted.
+    ======================================================= */
 
-       IMPORTANT:
-       No updated_at because the existing schema
-       doesn't contain updated_at.
-    ------------------------------------------------------- */
+    const finalStatus =
+      expired
+        ? "auto_submitted"
+        : "submitted";
 
     const submittedAt =
       now.toISOString();
 
-    /* -------------------------------------------------------
-       ATOMIC WRITE
-
-       SECURITY FIX (submission atomicity):
-
-       Previously the per-answer scoring writes
-       (answerStatements) went through db.batch() as one
-       round trip, and the attempt-row finalize (status,
-       score, counts) went through a SEPARATE db.execute()
-       right after it. If the server crashed, timed out, or
-       lost the connection between those two calls, an
-       attempt could be left with every answer scored but the
-       attempt row still showing status='in_progress' with no
-       score — an inconsistent state.
-
-       Fix:
-
-       The attempt-finalize UPDATE is now pushed into the
-       SAME statements array as the answer updates, and the
-       whole thing is sent through ONE db.batch() call.
-       libSQL/Turso runs every statement in a batch inside a
-       single transaction — either all of it lands, or none
-       of it does. The double-submit guard
-       (AND status = 'in_progress') stays exactly as before,
-       it's just the last statement in the same batch now
-       instead of a separate call.
-    ------------------------------------------------------- */
+    /* =======================================================
+       ATOMIC FINAL WRITE
+    ======================================================= */
 
     const finalStatements =
       [
@@ -823,7 +1000,9 @@ export async function POST(
               correct_count = ?,
               wrong_count = ?,
               unanswered_count = ?,
-              time_taken_seconds = ?
+              time_taken_seconds = ?,
+              active_seconds = ?,
+              last_active_at = NULL
 
             WHERE
               id = ?
@@ -847,7 +1026,9 @@ export async function POST(
 
             unansweredCount,
 
-            totalTimeSeconds,
+            finalTimeTakenSeconds,
+
+            finalTimeTakenSeconds,
 
             attemptId,
 
@@ -870,9 +1051,9 @@ export async function POST(
           1
       ];
 
-    /* -------------------------------------------------------
+    /* =======================================================
        RACE CONDITION / DOUBLE SUBMIT
-    ------------------------------------------------------- */
+    ======================================================= */
 
     if (
       Number(
@@ -887,21 +1068,26 @@ export async function POST(
       );
     }
 
-    /* -------------------------------------------------------
+    /* =======================================================
        DEBUG
-    ------------------------------------------------------- */
+    ======================================================= */
 
     console.log(
       `[submit] ${series}/${testId} attempt=${attemptId} ` +
-        `status=${finalStatus} questions=${questions.length} ` +
+        `mode=${live ? "live" : "active"} ` +
+        `status=${finalStatus} ` +
+        `questions=${questions.length} ` +
         `savedAnswers=${savedAnswers.length} ` +
-        `correct=${correctCount} wrong=${wrongCount} ` +
-        `unanswered=${unansweredCount} score=${finalScore}`
+        `correct=${correctCount} ` +
+        `wrong=${wrongCount} ` +
+        `unanswered=${unansweredCount} ` +
+        `score=${finalScore} ` +
+        `time=${finalTimeTakenSeconds}`
     );
 
-    /* -------------------------------------------------------
+    /* =======================================================
        RESPONSE
-    ------------------------------------------------------- */
+    ======================================================= */
 
     return NextResponse.json(
       {
@@ -928,6 +1114,11 @@ export async function POST(
           status:
             finalStatus,
 
+          timerMode:
+            live
+              ? "live"
+              : "active",
+
           score:
             finalScore,
 
@@ -947,7 +1138,7 @@ export async function POST(
             questions.length,
 
           timeTakenSeconds:
-            totalTimeSeconds,
+            finalTimeTakenSeconds,
 
           submittedAt,
 
@@ -981,4 +1172,29 @@ export async function POST(
       }
     );
   }
+}
+
+/* =========================================================
+   ERROR HELPER
+========================================================= */
+
+function jsonError(
+  message,
+  status,
+  code
+) {
+  return NextResponse.json(
+    {
+      success: false,
+
+      error:
+        message,
+
+      code:
+        code || null,
+    },
+    {
+      status,
+    }
+  );
 }

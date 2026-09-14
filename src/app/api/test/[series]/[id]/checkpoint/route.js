@@ -6,6 +6,8 @@ import {
   SERIES_CONFIG,
   normalizeSeries,
   normalizeId,
+  toNumber,
+  firstDefined,
   jsonError,
   requireAuthenticatedUser,
   requireSeriesAccess,
@@ -112,9 +114,6 @@ function normalizeAnswers(input) {
 
     /*
      * Last occurrence wins.
-     *
-     * Duplicate question IDs therefore
-     * result in one database write only.
      */
     map.set(
       questionId,
@@ -152,10 +151,8 @@ function parseDatabaseDate(
 
   /*
    * SQLite / Turso:
-   *
    * YYYY-MM-DD HH:mm:ss
    */
-
   if (
     text.length === 19 &&
     text[4] === "-" &&
@@ -172,13 +169,73 @@ function parseDatabaseDate(
     ).getTime();
   }
 
-  /*
-   * ISO timestamp
-   */
-
   return new Date(
     text
   ).getTime();
+}
+
+/* =========================================================
+   TIMER HELPERS
+========================================================= */
+
+function isLiveAttempt(
+  eventId
+) {
+  return (
+    Number(
+      eventId || 0
+    ) > 0
+  );
+}
+
+function calculateActiveSeconds(
+  storedSeconds,
+  lastActiveAt
+) {
+  const stored =
+    Math.max(
+      0,
+      Number(
+        storedSeconds || 0
+      )
+    );
+
+  if (!lastActiveAt) {
+    return Math.floor(
+      stored
+    );
+  }
+
+  const timestamp =
+    parseDatabaseDate(
+      lastActiveAt
+    );
+
+  if (
+    !Number.isFinite(
+      timestamp
+    )
+  ) {
+    return Math.floor(
+      stored
+    );
+  }
+
+  const additional =
+    Math.max(
+      0,
+      Math.floor(
+        (
+          Date.now() -
+          timestamp
+        ) / 1000
+      )
+    );
+
+  return Math.floor(
+    stored +
+      additional
+  );
 }
 
 /* =========================================================
@@ -190,11 +247,9 @@ export async function POST(
   { params }
 ) {
   try {
-    /*
-     * ------------------------------------------------------
-     * PARAMS
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       PARAMS
+    ------------------------------------------------------ */
 
     const {
       series: rawSeries,
@@ -211,11 +266,9 @@ export async function POST(
         rawId
       );
 
-    /*
-     * ------------------------------------------------------
-     * BASIC VALIDATION
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       BASIC VALIDATION
+    ------------------------------------------------------ */
 
     if (
       !SERIES_CONFIG[
@@ -237,13 +290,12 @@ export async function POST(
       );
     }
 
-    /*
-     * ------------------------------------------------------
-     * AUTH
-     *
-     * Centralized in testSecurity.js
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       AUTH
+       
+       Keep existing DB-backed session/device validation
+       for actual attempt APIs.
+    ------------------------------------------------------ */
 
     const auth =
       await requireAuthenticatedUser();
@@ -257,18 +309,9 @@ export async function POST(
       currentUser,
     } = auth;
 
-    /*
-     * ------------------------------------------------------
-     * SERIES ACCESS
-     *
-     * IMPORTANT:
-     *
-     * Paid access comes from the verified JWT snapshot.
-     *
-     * This route does NOT query
-     * user_series_access for entitlement.
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       JWT SERIES ACCESS
+    ------------------------------------------------------ */
 
     const access =
       requireSeriesAccess(
@@ -280,11 +323,9 @@ export async function POST(
       return access.response;
     }
 
-    /*
-     * ------------------------------------------------------
-     * TEST
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       TEST
+    ------------------------------------------------------ */
 
     const testResult =
       await getTestById(
@@ -300,22 +341,6 @@ export async function POST(
       test,
       config: securityConfig,
     } = testResult;
-
-    /*
-     * ------------------------------------------------------
-     * CONFIG
-     *
-     * Keep the existing checkpoint naming convention:
-     *
-     * attempts
-     * answers
-     * questions
-     * options
-     *
-     * The central security config stores the same series
-     * table names.
-     * ------------------------------------------------------
-     */
 
     const config = {
       ...securityConfig,
@@ -333,11 +358,9 @@ export async function POST(
         securityConfig.optionTable,
     };
 
-    /*
-     * ------------------------------------------------------
-     * REQUEST BODY
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       REQUEST BODY
+    ------------------------------------------------------ */
 
     const body =
       await request
@@ -357,11 +380,9 @@ export async function POST(
         body?.answers
       );
 
-    /*
-     * ------------------------------------------------------
-     * ATTEMPT ID VALIDATION
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       ATTEMPT ID VALIDATION
+    ------------------------------------------------------ */
 
     if (
       !Number.isInteger(
@@ -376,37 +397,9 @@ export async function POST(
       );
     }
 
-    /*
-     * ------------------------------------------------------
-     * EMPTY CHECKPOINT
-     *
-     * Successful no-op.
-     * ------------------------------------------------------
-     */
-
-    if (
-      answers.length ===
-      0
-    ) {
-      return NextResponse.json(
-        {
-          success: true,
-
-          saved: 0,
-
-          expired: false,
-        },
-        {
-          status: 200,
-        }
-      );
-    }
-
-    /*
-     * ------------------------------------------------------
-     * MAX PAYLOAD
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       MAX PAYLOAD
+    ------------------------------------------------------ */
 
     if (
       answers.length >
@@ -422,10 +415,20 @@ export async function POST(
     /*
      * ------------------------------------------------------
      * VERIFY ATTEMPT
-     *
-     * Ownership + correct test + active status +
-     * start/deadline in one query.
      * ------------------------------------------------------
+     *
+     * IMPORTANT:
+     *
+     * We now fetch timer fields as well.
+     *
+     * event_id != NULL
+     *     => LIVE / wall-clock
+     *
+     * event_id == NULL
+     *     => SELF-PACED / active-time
+     *
+     * active_seconds + last_active_at are authoritative
+     * for self-paced attempts.
      */
 
     const attemptResult =
@@ -434,8 +437,11 @@ export async function POST(
           SELECT
             id,
             status,
+            event_id,
             started_at,
-            deadline_at
+            deadline_at,
+            active_seconds,
+            last_active_at
           FROM ${config.attempts}
           WHERE
             id = ?
@@ -466,11 +472,9 @@ export async function POST(
       );
     }
 
-    /*
-     * ------------------------------------------------------
-     * ATTEMPT STATUS
-     * ------------------------------------------------------
-     */
+    /* ------------------------------------------------------
+       ATTEMPT STATUS
+    ------------------------------------------------------ */
 
     if (
       String(
@@ -494,6 +498,12 @@ export async function POST(
               attempt.status
             ) ===
             "auto_submitted",
+
+          activeSeconds:
+            Number(
+              attempt.active_seconds ||
+                0
+            ),
         },
         {
           status: 200,
@@ -501,33 +511,133 @@ export async function POST(
       );
     }
 
+    /* =======================================================
+       TIMER STATE
+    ======================================================= */
+
+    const live =
+      isLiveAttempt(
+        attempt.event_id
+      );
+
+    let currentActiveSeconds =
+      Math.max(
+        0,
+        Number(
+          attempt.active_seconds ||
+            0
+        )
+      );
+
     /*
      * ------------------------------------------------------
-     * EXPIRY CHECK
+     * SELF-PACED
      * ------------------------------------------------------
      *
-     * Expired checkpoint is a successful no-op.
+     * If last_active_at exists, add time since the last
+     * server checkpoint/heartbeat.
      *
-     * Final scoring/submission stays the responsibility
-     * of the submit endpoint.
+     * If it is NULL, attempt is paused.
+     */
+
+    if (!live) {
+      currentActiveSeconds =
+        calculateActiveSeconds(
+          attempt.active_seconds,
+          attempt.last_active_at
+        );
+
+      /*
+       * Do NOT use deadline_at as the primary expiry check
+       * for self-paced attempts.
+       *
+       * deadline_at can pass while the attempt is paused.
+       */
+    }
+
+    /*
+     * ------------------------------------------------------
+     * LIVE
+     * ------------------------------------------------------
+     *
+     * Existing wall-clock deadline remains authoritative.
      * ------------------------------------------------------
      */
 
-    const deadlineTimestamp =
-      parseDatabaseDate(
-        attempt.deadline_at
+    if (live) {
+      const deadlineTimestamp =
+        parseDatabaseDate(
+          attempt.deadline_at
+        );
+
+      const expired =
+        Number.isFinite(
+          deadlineTimestamp
+        ) &&
+        deadlineTimestamp <=
+          Date.now();
+
+      if (expired) {
+        console.log(
+          `[checkpoint] LIVE EXPIRED ${series}/${test.id} attempt=${attemptId} -> skip checkpoint, allow submit`
+        );
+
+        return NextResponse.json(
+          {
+            success: true,
+
+            saved: 0,
+
+            expired: true,
+
+            code:
+              "ATTEMPT_EXPIRED",
+
+            activeSeconds:
+              currentActiveSeconds,
+
+            message:
+              "Attempt time has expired. Final submission should be processed by the submit endpoint.",
+          },
+          {
+            status: 200,
+          }
+        );
+      }
+    }
+
+    /*
+     * ------------------------------------------------------
+     * SELF-PACED DURATION CHECK
+     * ------------------------------------------------------
+     */
+
+    const durationSeconds =
+      Math.max(
+        0,
+        Number(
+          firstDefined(
+            test?.duration_minutes,
+            test?.durationMinutes,
+            0
+          )
+        ) *
+          60
       );
 
-    const expired =
-      Number.isFinite(
-        deadlineTimestamp
-      ) &&
-      deadlineTimestamp <=
-        Date.now();
+    if (
+      !live &&
+      durationSeconds > 0 &&
+      currentActiveSeconds >=
+        durationSeconds
+    ) {
+      /*
+       * Keep checkpoint a no-op.
+       * Submit endpoint remains responsible for finalization.
+       */
 
-    if (expired) {
       console.log(
-        `[checkpoint] EXPIRED ${series}/${test.id} attempt=${attemptId} -> skip checkpoint, allow submit`
+        `[checkpoint] ACTIVE EXPIRED ${series}/${test.id} attempt=${attemptId} -> skip checkpoint, allow submit`
       );
 
       return NextResponse.json(
@@ -541,6 +651,12 @@ export async function POST(
           code:
             "ATTEMPT_EXPIRED",
 
+          activeSeconds:
+            durationSeconds,
+
+          remainingSeconds:
+            0,
+
           message:
             "Attempt time has expired. Final submission should be processed by the submit endpoint.",
         },
@@ -550,22 +666,113 @@ export async function POST(
       );
     }
 
+    /* =======================================================
+       TIMER PERSISTENCE
+    ======================================================= */
+
     /*
-     * ------------------------------------------------------
-     * BUILD WRITE STATEMENTS
-     * ------------------------------------------------------
+     * For a self-paced RUNNING attempt:
      *
-     * Every statement:
+     * active_seconds = calculated current value
+     * last_active_at = now
      *
-     * - verifies question belongs to test
-     * - verifies selected option belongs to question
-     * - upserts attempt answer
+     * For a self-paced PAUSED attempt:
      *
-     * is_correct stays NULL.
+     * last_active_at is NULL
      *
-     * Final scoring is performed by submit.
-     * ------------------------------------------------------
+     * IMPORTANT:
+     * We never revive a paused attempt here.
+     *
+     * This avoids a race with the pause endpoint.
      */
+
+    if (!live) {
+      if (
+        attempt.last_active_at
+      ) {
+        await db.execute({
+          sql: `
+            UPDATE ${config.attempts}
+            SET
+              active_seconds = ?,
+              last_active_at = CURRENT_TIMESTAMP
+            WHERE
+              id = ?
+              AND user_id = ?
+              AND test_id = ?
+              AND status = 'in_progress'
+              AND last_active_at IS NOT NULL
+          `,
+
+          args: [
+            Math.min(
+              currentActiveSeconds,
+              durationSeconds > 0
+                ? durationSeconds
+                : currentActiveSeconds
+            ),
+
+            attemptId,
+
+            userId,
+
+            testId,
+          ],
+        });
+      } else {
+        /*
+         * Attempt is paused.
+         *
+         * Keep it paused.
+         * Do not update last_active_at.
+         */
+      }
+    }
+
+    /* =======================================================
+       EMPTY CHECKPOINT
+    ======================================================= */
+
+    if (
+      answers.length ===
+      0
+    ) {
+      const remaining =
+        !live &&
+        durationSeconds > 0
+          ? Math.max(
+              0,
+              durationSeconds -
+                Math.min(
+                  currentActiveSeconds,
+                  durationSeconds
+                )
+            )
+          : null;
+
+      return NextResponse.json(
+        {
+          success: true,
+
+          saved: 0,
+
+          expired: false,
+
+          activeSeconds:
+            currentActiveSeconds,
+
+          remainingSeconds:
+            remaining,
+        },
+        {
+          status: 200,
+        }
+      );
+    }
+
+    /* =======================================================
+       BUILD WRITE STATEMENTS
+    ======================================================= */
 
     const statements =
       answers.map(
@@ -695,25 +902,34 @@ export async function POST(
         })
       );
 
-    /*
-     * ------------------------------------------------------
-     * WRITE
-     * ------------------------------------------------------
-     */
+    /* =======================================================
+       ATOMIC ANSWER WRITE
+    ======================================================= */
 
     await db.batch(
       statements,
       "write"
     );
 
-    /*
-     * ------------------------------------------------------
-     * RESPONSE
-     * ------------------------------------------------------
-     */
+    /* =======================================================
+       FINAL RESPONSE
+    ======================================================= */
+
+    const remaining =
+      !live &&
+      durationSeconds > 0
+        ? Math.max(
+            0,
+            durationSeconds -
+              Math.min(
+                currentActiveSeconds,
+                durationSeconds
+              )
+          )
+        : null;
 
     console.log(
-      `[checkpoint] SAVED ${series}/${test.id} attempt=${attemptId} answers=${answers.length}`
+      `[checkpoint] SAVED ${series}/${test.id} attempt=${attemptId} answers=${answers.length} timer=${live ? "live" : "active"}`
     );
 
     return NextResponse.json(
@@ -723,7 +939,19 @@ export async function POST(
         saved:
           answers.length,
 
-        expired: false,
+        expired:
+          false,
+
+        timerMode:
+          live
+            ? "live"
+            : "active",
+
+        activeSeconds:
+          currentActiveSeconds,
+
+        remainingSeconds:
+          remaining,
       },
       {
         status: 200,

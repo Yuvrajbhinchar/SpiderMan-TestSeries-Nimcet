@@ -145,11 +145,11 @@ function rateLimitedResponse(
 
 /*
 |--------------------------------------------------------------------------
-| MIDDLEWARE
+| PROXY
 |--------------------------------------------------------------------------
 */
 
-export async function middleware(
+export async function proxy(
   request
 ) {
   const {
