@@ -108,6 +108,23 @@ export const ADMIN_ACTIONS =
     SERIES_DEACTIVATE:
       "series:deactivate",
 
+
+      /* -------------------------------------------------------
+   CATEGORY MANAGEMENT
+------------------------------------------------------- */
+
+CATEGORY_CREATE:
+  "category:create",
+
+CATEGORY_UPDATE:
+  "category:update",
+
+CATEGORY_ACTIVATE:
+  "category:activate",
+
+CATEGORY_DEACTIVATE:
+  "category:deactivate",
+
     /* -------------------------------------------------------
        ACCESS MANAGEMENT
     ------------------------------------------------------- */

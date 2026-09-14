@@ -12,6 +12,7 @@ import {
   Activity,
   ArrowRight,
   CheckCircle2,
+  BarChart3,
 } from "lucide-react";
 
 import {
@@ -174,6 +175,14 @@ export default function AdminDashboardPage() {
       value: "Coming next",
       icon: ShieldCheck,
       href: "/admin/access",
+    },
+    {
+      title: "Analytics",
+      description:
+        "Attempt volume, average scores and pass rates across every series.",
+      value: "Live",
+      icon: BarChart3,
+      href: "/admin/analytics",
     },
   ];
 

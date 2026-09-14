@@ -896,10 +896,10 @@ export const POST =
           );
 
         const questionType =
-          normalize(
+          normalizeText(
             body.questionType ||
               "mcq"
-          );
+          ).toLowerCase();
 
         const explanation =
           normalizeText(

@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Trash2,
   Layers3,
+  UploadCloud,
 } from "lucide-react";
 
 import {
@@ -682,6 +683,24 @@ export default function AdminQuestionsPage() {
               {questions.length}
             </p>
           </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              router.push(
+                `/admin/tests/${encodeURIComponent(
+                  series
+                )}/${encodeURIComponent(
+                  testId
+                )}/questions/bulk`
+              )
+            }
+            className="inline-flex h-12 cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-600 shadow-sm transition hover:bg-slate-50"
+          >
+            <UploadCloud className="h-4.5 w-4.5" />
+
+            Bulk Import
+          </button>
 
           <button
             type="button"
