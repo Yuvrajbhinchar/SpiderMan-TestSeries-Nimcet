@@ -26,6 +26,13 @@ import {
 import { motion } from "motion/react";
 import { useRouter } from "next/navigation";
 
+// Mirrors PAID_SERIES in src/lib/seriesAccess.js — keep in sync.
+const PAID_SERIES_OPTIONS = [
+  { id: 2, slug: "asspire", name: "Asspire" },
+  { id: 3, slug: "imppetus", name: "Imppetus" },
+  { id: 4, slug: "spiderman", name: "SpiderMan" },
+];
+
 function formatDate(value) {
   if (!value) {
     return "—";
@@ -133,8 +140,88 @@ export default function AdminUsersPage() {
     setSelectedIds(new Set());
   }, [search, status, role]);
 
+  const [bulkSeriesId, setBulkSeriesId] = useState("2");
+  const [bulkAccessBusy, setBulkAccessBusy] = useState(false);
+
+  const bulkAccessUpdate = async (action) => {
+    if (selectedIds.size === 0 || bulkAccessBusy || bulkBusy) {
+      return;
+    }
+
+    const seriesId = Number(bulkSeriesId);
+    const seriesName =
+      PAID_SERIES_OPTIONS.find(
+        (series) => series.id === seriesId
+      )?.name || "this series";
+
+    const actionLabel =
+      action === "grant"
+        ? `grant ${seriesName} access to`
+        : `revoke ${seriesName} access for`;
+
+    if (
+      !window.confirm(
+        `Are you sure you want to ${actionLabel} ${selectedIds.size} user(s)? Their sessions will also be revoked.`
+      )
+    ) {
+      return;
+    }
+
+    setBulkAccessBusy(true);
+    setError("");
+
+    try {
+      const response = await fetch(
+        "/api/admin/users/access/bulk",
+        {
+          method: action === "grant" ? "POST" : "DELETE",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({
+            userIds: Array.from(selectedIds),
+            seriesId,
+          }),
+        }
+      );
+
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(data?.error || "Admin access denied.");
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Bulk access update failed."
+        );
+      }
+
+      setSelectedIds(new Set());
+
+      await loadUsers({
+        cursor: 0,
+        append: false,
+        background: users.length > 0,
+      });
+    } catch (bulkAccessError) {
+      console.error(
+        "Admin bulk access update error:",
+        bulkAccessError
+      );
+
+      setError(
+        bulkAccessError?.message || "Bulk access update failed."
+      );
+    } finally {
+      setBulkAccessBusy(false);
+    }
+  };
+
   const bulkUpdate = async (action) => {
-    if (selectedIds.size === 0 || bulkBusy) {
+    if (selectedIds.size === 0 || bulkBusy || bulkAccessBusy) {
       return;
     }
 
@@ -411,7 +498,7 @@ export default function AdminUsersPage() {
   // =========================================================
 
   const updateUser = async (user, action) => {
-    if (busyUser || bulkBusy) {
+    if (busyUser || bulkBusy || bulkAccessBusy) {
       return;
     }
 
@@ -721,9 +808,62 @@ export default function AdminUsersPage() {
             Revoke sessions
           </button>
 
+          {/* PAID SERIES ACCESS */}
+
+          <span className="mx-1 h-5 w-px bg-slate-200" />
+
+          <div className="relative">
+            <select
+              value={bulkSeriesId}
+              onChange={(event) =>
+                setBulkSeriesId(event.target.value)
+              }
+              disabled={bulkAccessBusy || bulkBusy}
+              className="h-9 cursor-pointer appearance-none rounded-xl border border-slate-200 bg-slate-50 pl-3 pr-8 text-xs font-bold text-slate-700 outline-none focus:border-red-300 focus:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {PAID_SERIES_OPTIONS.map((series) => (
+                <option key={series.id} value={series.id}>
+                  {series.name}
+                </option>
+              ))}
+            </select>
+
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+          </div>
+
           <button
             type="button"
-            disabled={bulkBusy}
+            disabled={bulkAccessBusy || bulkBusy}
+            onClick={() => bulkAccessUpdate("grant")}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-blue-600 px-3 text-xs font-black text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bulkAccessBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <KeyRound className="h-3.5 w-3.5" />
+            )}
+
+            Grant access
+          </button>
+
+          <button
+            type="button"
+            disabled={bulkAccessBusy || bulkBusy}
+            onClick={() => bulkAccessUpdate("revoke")}
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 px-3 text-xs font-black text-blue-600 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bulkAccessBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ShieldOff className="h-3.5 w-3.5" />
+            )}
+
+            Revoke access
+          </button>
+
+          <button
+            type="button"
+            disabled={bulkBusy || bulkAccessBusy}
             onClick={() =>
               setSelectedIds(new Set())
             }
@@ -757,7 +897,8 @@ export default function AdminUsersPage() {
                     disabled={
                       loading ||
                       users.length === 0 ||
-                      bulkBusy
+                      bulkBusy ||
+                      bulkAccessBusy
                     }
                     aria-label="Select all users"
                     title={
@@ -884,6 +1025,7 @@ export default function AdminUsersPage() {
                             }
                             disabled={
                               bulkBusy ||
+                              bulkAccessBusy ||
                               Boolean(busyUser)
                             }
                             aria-label={`Select ${user.username}`}
@@ -1120,7 +1262,8 @@ export default function AdminUsersPage() {
 
                 const busy =
                   Boolean(busyUser) ||
-                  bulkBusy;
+                  bulkBusy ||
+                  bulkAccessBusy;
 
                 return (
                   <motion.article

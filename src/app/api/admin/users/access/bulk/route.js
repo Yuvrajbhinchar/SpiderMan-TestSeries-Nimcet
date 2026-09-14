@@ -1,4 +1,4 @@
-import { db } from "@/lib/turso";
+import { batchWrite } from "@/lib/turso";
 
 import { withAdmin } from "@/lib/adminApi";
 
@@ -71,7 +71,7 @@ export const POST = withAdmin(async ({ request, userId: adminId }) => {
   const grantPlaceholders = ids.map(() => "?").join(", ");
 
   try {
-    await db.batch(
+    await batchWrite(
       [
         {
           sql: `
@@ -142,7 +142,7 @@ export const DELETE = withAdmin(async ({ request, userId: adminId }) => {
   const placeholders = ids.map(() => "?").join(", ");
 
   try {
-    const [accessResult] = await db.batch(
+    const [accessResult] = await batchWrite(
       [
         {
           sql: `

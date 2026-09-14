@@ -1,4 +1,4 @@
-import { db } from "@/lib/turso";
+import { db, batchWrite } from "@/lib/turso";
 
 import { withAdmin } from "@/lib/adminApi";
 
@@ -185,7 +185,7 @@ export const POST = withAdmin(async ({ request, context, userId: adminId }) => {
 
     const expiresAt = expiry.value;
 
-    await db.batch(
+    await batchWrite(
       [
         {
           sql: `
@@ -273,7 +273,7 @@ export const DELETE = withAdmin(async ({ request, context, userId: adminId }) =>
     const user = await getTargetUser(userId);
     if (!user) return adminError("User not found.", 404, "USER_NOT_FOUND");
 
-    const [accessResult] = await db.batch(
+    const [accessResult] = await batchWrite(
       [
         {
           sql: `
