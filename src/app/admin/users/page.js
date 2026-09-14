@@ -23,44 +23,28 @@ import {
   UserX,
 } from "lucide-react";
 
-import {
-  motion,
-} from "motion/react";
-
-import {
-  useRouter,
-} from "next/navigation";
+import { motion } from "motion/react";
+import { useRouter } from "next/navigation";
 
 function formatDate(value) {
   if (!value) {
     return "—";
   }
 
-  const date =
-    new Date(value);
+  const date = new Date(value);
 
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-  ) {
+  if (Number.isNaN(date.getTime())) {
     return String(value);
   }
 
-  return date.toLocaleDateString(
-    undefined,
-    {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    }
-  );
+  return date.toLocaleDateString(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
-function StatusPill({
-  active,
-  children,
-}) {
+function StatusPill({ active, children }) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black ${
@@ -81,565 +65,466 @@ function StatusPill({
 }
 
 export default function AdminUsersPage() {
-  const router =
-    useRouter();
+  const router = useRouter();
 
-  const [
-    users,
-    setUsers,
-  ] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
 
-  const [
-    loading,
-    setLoading,
-  ] = useState(true);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
 
-  const [
-    loadingMore,
-    setLoadingMore,
-  ] = useState(false);
+  const [status, setStatus] = useState("all");
+  const [role, setRole] = useState("all");
 
-  const [
-    refreshing,
-    setRefreshing,
-  ] = useState(false);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
 
-  const [
-    error,
-    setError,
-  ] = useState("");
+  const [busyUser, setBusyUser] = useState(null);
 
-  const [
-    searchInput,
-    setSearchInput,
-  ] = useState("");
+  // =========================================================
+  // BULK SELECTION
+  // =========================================================
 
-  const [
-    search,
-    setSearch,
-  ] = useState("");
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
-  const [
-    status,
-    setStatus,
-  ] = useState("all");
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
 
-  const [
-    role,
-    setRole,
-  ] = useState("all");
-
-  const [
-    nextCursor,
-    setNextCursor,
-  ] = useState(null);
-
-  const [
-    hasMore,
-    setHasMore,
-  ] = useState(false);
-
-  const [
-    busyUser,
-    setBusyUser,
-  ] = useState(null);
-
-  const observerRef =
-    useRef(null);
-
-  const mountedRef =
-    useRef(true);
-
-  const loadUsers =
-    useCallback(
-      async ({
-        cursor = 0,
-        append = false,
-        background = false,
-      } = {}) => {
-        if (append) {
-          setLoadingMore(
-            true
-          );
-        } else if (
-          background
-        ) {
-          setRefreshing(
-            true
-          );
-        } else {
-          setLoading(
-            true
-          );
-        }
-
-        setError("");
-
-        try {
-          const params =
-            new URLSearchParams();
-
-          params.set(
-            "search",
-            search
-          );
-
-          params.set(
-            "status",
-            status
-          );
-
-          params.set(
-            "role",
-            role
-          );
-
-          params.set(
-            "limit",
-            "25"
-          );
-
-          if (cursor) {
-            params.set(
-              "cursor",
-              String(cursor)
-            );
-          }
-
-          const response =
-            await fetch(
-              `/api/admin/users?${params.toString()}`,
-              {
-                method:
-                  "GET",
-
-                credentials:
-                  "include",
-
-                cache:
-                  "no-store",
-              }
-            );
-
-          const data =
-            await response
-              .json()
-              .catch(
-                () => ({})
-              );
-
-          if (
-            response.status ===
-              401 ||
-            response.status ===
-              403
-          ) {
-            throw new Error(
-              data?.error ||
-                "Admin access denied."
-            );
-          }
-
-          if (!response.ok) {
-            throw new Error(
-              data?.error ||
-                "Unable to load users."
-            );
-          }
-
-          if (
-            !mountedRef.current
-          ) {
-            return;
-          }
-
-          const incoming =
-            Array.isArray(
-              data?.users
-            )
-              ? data.users
-              : [];
-
-          if (append) {
-            setUsers(
-              (previous) => {
-                const ids =
-                  new Set(
-                    previous.map(
-                      (item) =>
-                        Number(
-                          item.id
-                        )
-                    )
-                  );
-
-                return [
-                  ...previous,
-                  ...incoming.filter(
-                    (item) =>
-                      !ids.has(
-                        Number(
-                          item.id
-                        )
-                      )
-                  ),
-                ];
-              }
-            );
-          } else {
-            setUsers(
-              incoming
-            );
-          }
-
-          const pagination =
-            data?.pagination;
-
-          setNextCursor(
-            pagination?.nextCursor ??
-              null
-          );
-
-          setHasMore(
-            Boolean(
-              pagination?.hasMore
-            )
-          );
-        } catch (
-          loadError
-        ) {
-          if (
-            !mountedRef.current
-          ) {
-            return;
-          }
-
-          console.error(
-            "Admin users load error:",
-            loadError
-          );
-
-          setError(
-            loadError?.message ||
-              "Unable to load users."
-          );
-        } finally {
-          if (
-            !mountedRef.current
-          ) {
-            return;
-          }
-
-          setLoading(
-            false
-          );
-
-          setLoadingMore(
-            false
-          );
-
-          setRefreshing(
-            false
-          );
-        }
-      },
-      [
-        search,
-        status,
-        role,
-      ]
-    );
-
-  useEffect(() => {
-    const timer =
-      window.setTimeout(
-        () => {
-          setSearch(
-            searchInput.trim()
-          );
-        },
-        350
-      );
-
-    return () =>
-      window.clearTimeout(
-        timer
-      );
-  }, [
-    searchInput,
-  ]);
-
-  useEffect(() => {
-    setUsers([]);
-
-    setNextCursor(
-      null
-    );
-
-    setHasMore(
-      false
-    );
-
-    loadUsers({
-      cursor: 0,
-      append: false,
-    });
-  }, [
-    search,
-    status,
-    role,
-  ]);
-
-  const loadMore =
-    useCallback(() => {
-      if (
-        loading ||
-        loadingMore ||
-        !hasMore ||
-        !nextCursor
-      ) {
-        return;
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
       }
 
-      loadUsers({
-        cursor:
-          nextCursor,
-        append:
-          true,
-      });
-    }, [
-      hasMore,
-      loadUsers,
-      loading,
-      loadingMore,
-      nextCursor,
-    ]);
-
-  const setObserverTarget =
-    useCallback(
-      (node) => {
-        if (
-          observerRef.current
-        ) {
-          observerRef.current.disconnect();
-        }
-
-        if (!node) {
-          return;
-        }
-
-        observerRef.current =
-          new IntersectionObserver(
-            (entries) => {
-              if (
-                entries[0]
-                  ?.isIntersecting
-              ) {
-                loadMore();
-              }
-            },
-            {
-              rootMargin:
-                "400px",
-            }
-          );
-
-        observerRef.current.observe(
-          node
-        );
-      },
-      [loadMore]
-    );
-
-  useEffect(() => {
-    mountedRef.current =
-      true;
-
-    return () => {
-      mountedRef.current =
-        false;
-
-      observerRef.current?.disconnect();
-    };
+      return next;
+    });
   }, []);
 
-  const updateUser =
-    async (
-      user,
-      action
-    ) => {
-      if (busyUser) {
-        return;
-      }
-
-      let message =
-        "";
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((previous) => {
+      const currentIds = users.map((user) => Number(user.id));
 
       if (
-        action ===
-        "deactivate"
+        currentIds.length > 0 &&
+        currentIds.every((id) => previous.has(id))
       ) {
-        message =
-          `Deactivate ${user.username}?\n\nTheir active session and device will also be revoked.`;
-      } else if (
-        action ===
-        "activate"
-      ) {
-        message =
-          `Activate ${user.username}?`;
-      } else {
-        message =
-          `Revoke ${user.username}'s current session/device?`;
+        return new Set();
       }
 
-      if (
-        !window.confirm(
-          message
-        )
-      ) {
-        return;
+      return new Set(currentIds);
+    });
+  }, [users]);
+
+  const allCurrentUsersSelected =
+    users.length > 0 &&
+    users.every((user) => selectedIds.has(Number(user.id)));
+
+  const someCurrentUsersSelected =
+    users.some((user) => selectedIds.has(Number(user.id))) &&
+    !allCurrentUsersSelected;
+
+  // Clear selection whenever the active dataset changes.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [search, status, role]);
+
+  const bulkUpdate = async (action) => {
+    if (selectedIds.size === 0 || bulkBusy) {
+      return;
+    }
+
+    const actionLabel =
+      action === "activate"
+        ? "activate"
+        : action === "deactivate"
+          ? "deactivate"
+          : "revoke sessions for";
+
+    if (
+      !window.confirm(
+        `Are you sure you want to ${actionLabel} ${selectedIds.size} user(s)?`
+      )
+    ) {
+      return;
+    }
+
+    setBulkBusy(true);
+    setError("");
+
+    try {
+      const response = await fetch("/api/admin/users/status/bulk", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          userIds: Array.from(selectedIds),
+          action,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(data?.error || "Admin access denied.");
       }
 
-      setBusyUser(
-        `${user.id}:${action}`
+      if (!response.ok) {
+        throw new Error(
+          data?.error || "Bulk update failed."
+        );
+      }
+
+      setSelectedIds(new Set());
+
+      await loadUsers({
+        cursor: 0,
+        append: false,
+        background: users.length > 0,
+      });
+    } catch (bulkError) {
+      console.error("Admin bulk user update error:", bulkError);
+
+      setError(
+        bulkError?.message || "Bulk update failed."
       );
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  // =========================================================
+  // PAGINATION / LOADING
+  // =========================================================
+
+  const observerRef = useRef(null);
+  const mountedRef = useRef(true);
+
+  const loadUsers = useCallback(
+    async ({
+      cursor = 0,
+      append = false,
+      background = false,
+    } = {}) => {
+      if (append) {
+        setLoadingMore(true);
+      } else if (background) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
 
       setError("");
 
       try {
-        const response =
-          await fetch(
-            "/api/admin/users",
-            {
-              method:
-                "PATCH",
+        const params = new URLSearchParams();
 
-              credentials:
-                "include",
+        params.set("search", search);
+        params.set("status", status);
+        params.set("role", role);
+        params.set("limit", "25");
 
-              headers: {
-                "Content-Type":
-                  "application/json",
-              },
+        if (cursor) {
+          params.set("cursor", String(cursor));
+        }
 
-              cache:
-                "no-store",
+        const response = await fetch(
+          `/api/admin/users?${params.toString()}`,
+          {
+            method: "GET",
+            credentials: "include",
+            cache: "no-store",
+          }
+        );
 
-              body:
-                JSON.stringify({
-                  userId:
-                    Number(
-                      user.id
-                    ),
-
-                  action,
-                }),
-            }
-          );
-
-        const data =
-          await response
-            .json()
-            .catch(
-              () => ({})
-            );
+        const data = await response
+          .json()
+          .catch(() => ({}));
 
         if (
-          response.status ===
-            401 ||
-          response.status ===
-            403
+          response.status === 401 ||
+          response.status === 403
         ) {
           throw new Error(
-            data?.error ||
-              "Admin access denied."
+            data?.error || "Admin access denied."
           );
         }
 
         if (!response.ok) {
           throw new Error(
-            data?.error ||
-              "Unable to update user."
+            data?.error || "Unable to load users."
           );
         }
 
-        setUsers(
-          (previous) =>
-            previous.map(
-              (item) => {
-                if (
-                  Number(
-                    item.id
-                  ) !==
-                  Number(
-                    user.id
-                  )
-                ) {
-                  return item;
-                }
+        if (!mountedRef.current) {
+          return;
+        }
 
-                if (
-                  action ===
-                  "activate"
-                ) {
-                  return {
-                    ...item,
-                    isActive:
-                      true,
-                  };
-                }
+        const incoming = Array.isArray(data?.users)
+          ? data.users
+          : [];
 
-                return {
-                  ...item,
+        if (append) {
+          setUsers((previous) => {
+            const existingIds = new Set(
+              previous.map((item) => Number(item.id))
+            );
 
-                  isActive:
-                    action ===
-                    "deactivate"
-                      ? false
-                      : item.isActive,
+            return [
+              ...previous,
+              ...incoming.filter(
+                (item) =>
+                  !existingIds.has(Number(item.id))
+              ),
+            ];
+          });
+        } else {
+          setUsers(incoming);
+        }
 
-                  hasActiveSession:
-                    false,
+        const pagination = data?.pagination;
 
-                  hasActiveDevice:
-                    false,
-                };
-              }
-            )
+        setNextCursor(
+          pagination?.nextCursor ?? null
         );
-      } catch (
-        updateError
-      ) {
+
+        setHasMore(
+          Boolean(pagination?.hasMore)
+        );
+      } catch (loadError) {
+        if (!mountedRef.current) {
+          return;
+        }
+
         console.error(
-          "Admin user update error:",
-          updateError
+          "Admin users load error:",
+          loadError
         );
 
         setError(
-          updateError?.message ||
-            "Unable to update user."
+          loadError?.message ||
+            "Unable to load users."
         );
       } finally {
-        setBusyUser(
-          null
+        if (!mountedRef.current) {
+          return;
+        }
+
+        setLoading(false);
+        setLoadingMore(false);
+        setRefreshing(false);
+      }
+    },
+    [search, status, role]
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [searchInput]);
+
+  useEffect(() => {
+    setUsers([]);
+    setNextCursor(null);
+    setHasMore(false);
+
+    loadUsers({
+      cursor: 0,
+      append: false,
+    });
+  }, [search, status, role, loadUsers]);
+
+  const loadMore = useCallback(() => {
+    if (
+      loading ||
+      loadingMore ||
+      !hasMore ||
+      !nextCursor
+    ) {
+      return;
+    }
+
+    loadUsers({
+      cursor: nextCursor,
+      append: true,
+    });
+  }, [
+    hasMore,
+    loadUsers,
+    loading,
+    loadingMore,
+    nextCursor,
+  ]);
+
+  const setObserverTarget = useCallback(
+    (node) => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+      }
+
+      if (!node) {
+        return;
+      }
+
+      observerRef.current =
+        new IntersectionObserver(
+          (entries) => {
+            if (
+              entries[0]?.isIntersecting
+            ) {
+              loadMore();
+            }
+          },
+          {
+            rootMargin: "400px",
+          }
+        );
+
+      observerRef.current.observe(node);
+    },
+    [loadMore]
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      observerRef.current?.disconnect();
+    };
+  }, []);
+
+  // =========================================================
+  // SINGLE USER ACTION
+  // =========================================================
+
+  const updateUser = async (user, action) => {
+    if (busyUser || bulkBusy) {
+      return;
+    }
+
+    let message = "";
+
+    if (action === "deactivate") {
+      message =
+        `Deactivate ${user.username}?\n\n` +
+        "Their active session and device will also be revoked.";
+    } else if (action === "activate") {
+      message = `Activate ${user.username}?`;
+    } else {
+      message =
+        `Revoke ${user.username}'s current session/device?`;
+    }
+
+    if (!window.confirm(message)) {
+      return;
+    }
+
+    setBusyUser(`${user.id}:${action}`);
+    setError("");
+
+    try {
+      const response = await fetch(
+        "/api/admin/users",
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          cache: "no-store",
+          body: JSON.stringify({
+            userId: Number(user.id),
+            action,
+          }),
+        }
+      );
+
+      const data = await response
+        .json()
+        .catch(() => ({}));
+
+      if (
+        response.status === 401 ||
+        response.status === 403
+      ) {
+        throw new Error(
+          data?.error || "Admin access denied."
         );
       }
-    };
 
-  const refresh =
-    () => {
-      loadUsers({
-        cursor:
-          0,
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            "Unable to update user."
+        );
+      }
 
-        append:
-          false,
+      setUsers((previous) =>
+        previous.map((item) => {
+          if (
+            Number(item.id) !==
+            Number(user.id)
+          ) {
+            return item;
+          }
 
-        background:
-          users.length >
-          0,
-      });
-    };
+          if (action === "activate") {
+            return {
+              ...item,
+              isActive: true,
+            };
+          }
+
+          return {
+            ...item,
+            isActive:
+              action === "deactivate"
+                ? false
+                : item.isActive,
+            hasActiveSession: false,
+            hasActiveDevice: false,
+          };
+        })
+      );
+    } catch (updateError) {
+      console.error(
+        "Admin user update error:",
+        updateError
+      );
+
+      setError(
+        updateError?.message ||
+          "Unable to update user."
+      );
+    } finally {
+      setBusyUser(null);
+    }
+  };
+
+  const refresh = () => {
+    loadUsers({
+      cursor: 0,
+      append: false,
+      background: users.length > 0,
+    });
+  };
+
+  // =========================================================
+  // RENDER
+  // =========================================================
 
   return (
     <div>
@@ -685,15 +570,10 @@ export default function AdminUsersPage() {
             <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
 
             <input
-              value={
-                searchInput
-              }
-              onChange={(
-                event
-              ) =>
+              value={searchInput}
+              onChange={(event) =>
                 setSearchInput(
-                  event.target
-                    .value
+                  event.target.value
                 )
               }
               placeholder="Search username, email or name..."
@@ -703,16 +583,9 @@ export default function AdminUsersPage() {
 
           <div className="relative">
             <select
-              value={
-                status
-              }
-              onChange={(
-                event
-              ) =>
-                setStatus(
-                  event.target
-                    .value
-                )
+              value={status}
+              onChange={(event) =>
+                setStatus(event.target.value)
               }
               className="h-11 w-full cursor-pointer appearance-none rounded-xl border border-slate-200 bg-slate-50 px-3.5 pr-9 text-sm font-bold text-slate-700 outline-none focus:border-red-300 focus:bg-white"
             >
@@ -736,16 +609,9 @@ export default function AdminUsersPage() {
             <Filter className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
 
             <select
-              value={
-                role
-              }
-              onChange={(
-                event
-              ) =>
-                setRole(
-                  event.target
-                    .value
-                )
+              value={role}
+              onChange={(event) =>
+                setRole(event.target.value)
               }
               className="h-11 w-full cursor-pointer appearance-none rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-9 text-sm font-bold text-slate-700 outline-none focus:border-red-300 focus:bg-white"
             >
@@ -767,13 +633,8 @@ export default function AdminUsersPage() {
 
           <button
             type="button"
-            onClick={
-              refresh
-            }
-            disabled={
-              loading ||
-              refreshing
-            }
+            onClick={refresh}
+            disabled={loading || refreshing}
             className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <RefreshCw
@@ -800,16 +661,114 @@ export default function AdminUsersPage() {
       ) : null}
 
       {/* =====================================================
+          BULK TOOLBAR
+      ====================================================== */}
+
+      {selectedIds.size > 0 ? (
+        <div className="mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <span className="text-xs font-black text-slate-600">
+            {selectedIds.size} selected
+          </span>
+
+          <button
+            type="button"
+            disabled={bulkBusy}
+            onClick={() =>
+              bulkUpdate("activate")
+            }
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bulkBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <UserCheck className="h-3.5 w-3.5" />
+            )}
+
+            Activate
+          </button>
+
+          <button
+            type="button"
+            disabled={bulkBusy}
+            onClick={() =>
+              bulkUpdate("deactivate")
+            }
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-red-50 px-3 text-xs font-black text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bulkBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <UserX className="h-3.5 w-3.5" />
+            )}
+
+            Deactivate
+          </button>
+
+          <button
+            type="button"
+            disabled={bulkBusy}
+            onClick={() =>
+              bulkUpdate("revoke_session")
+            }
+            className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {bulkBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ShieldOff className="h-3.5 w-3.5" />
+            )}
+
+            Revoke sessions
+          </button>
+
+          <button
+            type="button"
+            disabled={bulkBusy}
+            onClick={() =>
+              setSelectedIds(new Set())
+            }
+            className="h-9 rounded-xl px-3 text-xs font-bold text-slate-400 transition hover:bg-slate-50 hover:text-slate-600 disabled:opacity-50"
+          >
+            Clear
+          </button>
+        </div>
+      ) : null}
+
+      {/* =====================================================
           USERS
       ====================================================== */}
 
       <section className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {/* DESKTOP */}
+        {/* ===================================================
+            DESKTOP
+        ==================================================== */}
 
         <div className="hidden overflow-x-auto lg:block">
-          <table className="w-full min-w-[1200px]">
+          <table className="w-full min-w-[1250px]">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
+                {/* SELECT ALL */}
+
+                <th className="w-12 px-4 py-3 text-center">
+                  <input
+                    type="checkbox"
+                    checked={allCurrentUsersSelected}
+                    onChange={toggleSelectAll}
+                    disabled={
+                      loading ||
+                      users.length === 0 ||
+                      bulkBusy
+                    }
+                    aria-label="Select all users"
+                    title={
+                      allCurrentUsersSelected
+                        ? "Clear all users"
+                        : "Select all users"
+                    }
+                    className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </th>
+
                 <th className="px-5 py-3 text-left text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
                   User
                 </th>
@@ -840,12 +799,11 @@ export default function AdminUsersPage() {
               {loading ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-6 py-20 text-center"
                   >
                     <div className="inline-flex items-center gap-2 text-sm font-bold text-slate-400">
                       <Loader2 className="h-5 w-5 animate-spin" />
-
                       Loading users...
                     </div>
                   </td>
@@ -853,11 +811,10 @@ export default function AdminUsersPage() {
               ) : null}
 
               {!loading &&
-              users.length ===
-                0 ? (
+              users.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-6 py-20 text-center"
                   >
                     <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-50 text-slate-400">
@@ -876,235 +833,250 @@ export default function AdminUsersPage() {
               ) : null}
 
               {!loading
-                ? users.map(
-                    (
-                      user,
-                      index
-                    ) => {
-                      const deactivateBusy =
-                        busyUser ===
-                        `${user.id}:deactivate`;
+                ? users.map((user, index) => {
+                    const userId = Number(user.id);
 
-                      const activateBusy =
-                        busyUser ===
-                        `${user.id}:activate`;
+                    const selected =
+                      selectedIds.has(userId);
 
-                      const revokeBusy =
-                        busyUser ===
-                        `${user.id}:revoke_session`;
+                    const deactivateBusy =
+                      busyUser ===
+                      `${user.id}:deactivate`;
 
-                      return (
-                        <motion.tr
-                          key={
-                            user.id
-                          }
-                          initial={{
-                            opacity: 0,
-                          }}
-                          animate={{
-                            opacity: 1,
-                          }}
-                          transition={{
-                            duration:
-                              0.18,
-                            delay:
-                              Math.min(
-                                index *
-                                  0.015,
-                                0.15
-                              ),
-                          }}
-                          className="transition hover:bg-slate-50/60"
-                        >
-                          <td className="px-5 py-4">
-                            <div className="max-w-[300px]">
-                              <p className="truncate text-sm font-black text-slate-900">
-                                {user.displayName ||
-                                  user.username}
-                              </p>
+                    const activateBusy =
+                      busyUser ===
+                      `${user.id}:activate`;
 
-                              <p className="mt-1 truncate text-xs text-slate-400">
-                                @
-                                {
-                                  user.username
-                                }
-                              </p>
+                    const revokeBusy =
+                      busyUser ===
+                      `${user.id}:revoke_session`;
 
-                              <p className="mt-0.5 truncate text-[11px] text-slate-400">
-                                {
-                                  user.email
-                                }
-                              </p>
-                            </div>
-                          </td>
+                    return (
+                      <motion.tr
+                        key={user.id}
+                        initial={{
+                          opacity: 0,
+                        }}
+                        animate={{
+                          opacity: 1,
+                        }}
+                        transition={{
+                          duration: 0.18,
+                          delay: Math.min(
+                            index * 0.015,
+                            0.15
+                          ),
+                        }}
+                        className={`transition hover:bg-slate-50/60 ${
+                          selected
+                            ? "bg-red-50/40"
+                            : ""
+                        }`}
+                      >
+                        {/* ROW CHECKBOX */}
 
-                          <td className="px-4 py-4">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-black ${
-                                user.role ===
-                                "admin"
-                                  ? "bg-slate-950 text-white"
-                                  : "bg-slate-100 text-slate-600"
-                              }`}
-                            >
-                              {user.role ===
-                              "admin" ? (
-                                <ShieldCheck className="h-3 w-3" />
-                              ) : null}
+                        <td className="w-12 px-4 py-4 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() =>
+                              toggleSelect(userId)
+                            }
+                            disabled={
+                              bulkBusy ||
+                              Boolean(busyUser)
+                            }
+                            aria-label={`Select ${user.username}`}
+                            className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </td>
 
-                              {user.role}
+                        <td className="px-5 py-4">
+                          <div className="max-w-[300px]">
+                            <p className="truncate text-sm font-black text-slate-900">
+                              {user.displayName ||
+                                user.username}
+                            </p>
+
+                            <p className="mt-1 truncate text-xs text-slate-400">
+                              @{user.username}
+                            </p>
+
+                            <p className="mt-0.5 truncate text-[11px] text-slate-400">
+                              {user.email}
+                            </p>
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-4">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[10px] font-black ${
+                              user.role === "admin"
+                                ? "bg-slate-950 text-white"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {user.role ===
+                            "admin" ? (
+                              <ShieldCheck className="h-3 w-3" />
+                            ) : null}
+
+                            {user.role}
+                          </span>
+                        </td>
+
+                        <td className="px-4 py-4">
+                          <StatusPill
+                            active={
+                              user.isActive
+                            }
+                          >
+                            {user.isActive
+                              ? "Active"
+                              : "Inactive"}
+                          </StatusPill>
+                        </td>
+
+                        <td className="px-4 py-4">
+                          <div className="flex flex-wrap gap-1.5">
+                            <span className="inline-flex items-center gap-1 rounded-lg bg-slate-50 px-2.5 py-1 text-[10px] font-bold text-slate-500">
+                              <Smartphone className="h-3 w-3" />
+
+                              {user.hasActiveDevice
+                                ? "Device active"
+                                : "No device"}
                             </span>
-                          </td>
 
-                          <td className="px-4 py-4">
-                            <StatusPill
-                              active={
-                                user.isActive
-                              }
-                            >
-                              {user.isActive
-                                ? "Active"
-                                : "Inactive"}
-                            </StatusPill>
-                          </td>
-
-                          <td className="px-4 py-4">
-                            <div className="flex flex-wrap gap-1.5">
-                              <span className="inline-flex items-center gap-1 rounded-lg bg-slate-50 px-2.5 py-1 text-[10px] font-bold text-slate-500">
-                                <Smartphone className="h-3 w-3" />
-
-                                {user.hasActiveDevice
-                                  ? "Device active"
-                                  : "No device"}
+                            {user.hasActiveSession ? (
+                              <span className="rounded-lg bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-600">
+                                Session active
                               </span>
+                            ) : null}
+                          </div>
+                        </td>
 
-                              {user.hasActiveSession ? (
-                                <span className="rounded-lg bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-600">
-                                  Session active
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
+                        <td className="px-4 py-4">
+                          <span className="text-xs font-semibold text-slate-500">
+                            {formatDate(
+                              user.createdAt
+                            )}
+                          </span>
+                        </td>
 
-                          <td className="px-4 py-4">
-                            <span className="text-xs font-semibold text-slate-500">
-                              {formatDate(
-                                user.createdAt
-                              )}
-                            </span>
-                          </td>
-
-                          <td className="px-5 py-4">
-                            <div className="flex items-center justify-end gap-2">
-                              {user.isActive ? (
-                                <button
-                                  type="button"
-                                  disabled={
-                                    Boolean(
-                                      busyUser
-                                    )
-                                  }
-                                  onClick={() =>
-                                    updateUser(
-                                      user,
-                                      "deactivate"
-                                    )
-                                  }
-                                  className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-red-100 bg-red-50 px-3 text-xs font-black text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {deactivateBusy ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <UserX className="h-3.5 w-3.5" />
-                                  )}
-
-                                  Deactivate
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={
-                                    Boolean(
-                                      busyUser
-                                    )
-                                  }
-                                  onClick={() =>
-                                    updateUser(
-                                      user,
-                                      "activate"
-                                    )
-                                  }
-                                  className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {activateBusy ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <UserCheck className="h-3.5 w-3.5" />
-                                  )}
-
-                                  Activate
-                                </button>
-                              )}
-
-                              {user.hasActiveSession ||
-                              user.hasActiveDevice ? (
-                                <button
-                                  type="button"
-                                  disabled={
-                                    Boolean(
-                                      busyUser
-                                    )
-                                  }
-                                  onClick={() =>
-                                    updateUser(
-                                      user,
-                                      "revoke_session"
-                                    )
-                                  }
-                                  className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {revokeBusy ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <ShieldOff className="h-3.5 w-3.5" />
-                                  )}
-
-                                  Revoke
-                                </button>
-                              ) : null}
-
-                              {/* ACCESS BUTTON */}
-
+                        <td className="px-5 py-4">
+                          <div className="flex items-center justify-end gap-2">
+                            {user.isActive ? (
                               <button
                                 type="button"
                                 disabled={
                                   Boolean(
                                     busyUser
-                                  )
+                                  ) ||
+                                  bulkBusy
                                 }
                                 onClick={() =>
-                                  router.push(
-                                    `/admin/users/${encodeURIComponent(
-                                      String(
-                                        user.id
-                                      )
-                                    )}/access`
+                                  updateUser(
+                                    user,
+                                    "deactivate"
                                   )
                                 }
-                                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 px-3 text-xs font-black text-blue-600 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-red-100 bg-red-50 px-3 text-xs font-black text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                <KeyRound className="h-3.5 w-3.5" />
+                                {deactivateBusy ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <UserX className="h-3.5 w-3.5" />
+                                )}
 
-                                Access
+                                Deactivate
                               </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={
+                                  Boolean(
+                                    busyUser
+                                  ) ||
+                                  bulkBusy
+                                }
+                                onClick={() =>
+                                  updateUser(
+                                    user,
+                                    "activate"
+                                  )
+                                }
+                                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-xs font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {activateBusy ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <UserCheck className="h-3.5 w-3.5" />
+                                )}
 
-                              <ChevronRight className="h-4 w-4 text-slate-300" />
-                            </div>
-                          </td>
-                        </motion.tr>
-                      );
-                    }
-                  )
+                                Activate
+                              </button>
+                            )}
+
+                            {user.hasActiveSession ||
+                            user.hasActiveDevice ? (
+                              <button
+                                type="button"
+                                disabled={
+                                  Boolean(
+                                    busyUser
+                                  ) ||
+                                  bulkBusy
+                                }
+                                onClick={() =>
+                                  updateUser(
+                                    user,
+                                    "revoke_session"
+                                  )
+                                }
+                                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {revokeBusy ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <ShieldOff className="h-3.5 w-3.5" />
+                                )}
+
+                                Revoke
+                              </button>
+                            ) : null}
+
+                            {/* ACCESS */}
+
+                            <button
+                              type="button"
+                              disabled={
+                                Boolean(
+                                  busyUser
+                                ) ||
+                                bulkBusy
+                              }
+                              onClick={() =>
+                                router.push(
+                                  `/admin/users/${encodeURIComponent(
+                                    String(
+                                      user.id
+                                    )
+                                  )}/access`
+                                )
+                              }
+                              className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 px-3 text-xs font-black text-blue-600 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <KeyRound className="h-3.5 w-3.5" />
+
+                              Access
+                            </button>
+
+                            <ChevronRight className="h-4 w-4 text-slate-300" />
+                          </div>
+                        </td>
+                      </motion.tr>
+                    );
+                  })
                 : null}
             </tbody>
           </table>
@@ -1126,8 +1098,7 @@ export default function AdminUsersPage() {
           ) : null}
 
           {!loading &&
-          users.length ===
-            0 ? (
+          users.length === 0 ? (
             <div className="px-6 py-16 text-center">
               <UserCheck className="mx-auto h-7 w-7 text-slate-400" />
 
@@ -1142,193 +1113,197 @@ export default function AdminUsersPage() {
           ) : null}
 
           {!loading
-            ? users.map(
-                (
-                  user,
-                  index
-                ) => {
-                  const busy =
-                    Boolean(
-                      busyUser
-                    );
+            ? users.map((user, index) => {
+                const userId = Number(user.id);
+                const selected =
+                  selectedIds.has(userId);
 
-                  return (
-                    <motion.article
-                      key={
-                        user.id
-                      }
-                      initial={{
-                        opacity: 0,
-                        y: 6,
-                      }}
-                      animate={{
-                        opacity: 1,
-                        y: 0,
-                      }}
-                      transition={{
-                        duration:
-                          0.18,
-                        delay:
-                          Math.min(
-                            index *
-                              0.02,
-                            0.15
-                          ),
-                      }}
-                      className="p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-black text-slate-900">
-                            {user.displayName ||
-                              user.username}
-                          </p>
+                const busy =
+                  Boolean(busyUser) ||
+                  bulkBusy;
 
-                          <p className="mt-1 truncate text-xs text-slate-400">
-                            @
-                            {
-                              user.username
-                            }
-                          </p>
+                return (
+                  <motion.article
+                    key={user.id}
+                    initial={{
+                      opacity: 0,
+                      y: 6,
+                    }}
+                    animate={{
+                      opacity: 1,
+                      y: 0,
+                    }}
+                    transition={{
+                      duration: 0.18,
+                      delay: Math.min(
+                        index * 0.02,
+                        0.15
+                      ),
+                    }}
+                    className={`p-4 transition ${
+                      selected
+                        ? "bg-red-50/40"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {/* MOBILE CHECKBOX */}
 
-                          <p className="mt-0.5 truncate text-[11px] text-slate-400">
-                            {
-                              user.email
-                            }
-                          </p>
+                      <div className="pt-1">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() =>
+                            toggleSelect(
+                              userId
+                            )
+                          }
+                          disabled={busy}
+                          aria-label={`Select ${user.username}`}
+                          className="h-4 w-4 cursor-pointer rounded border-slate-300 accent-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-black text-slate-900">
+                              {user.displayName ||
+                                user.username}
+                            </p>
+
+                            <p className="mt-1 truncate text-xs text-slate-400">
+                              @{user.username}
+                            </p>
+
+                            <p className="mt-0.5 truncate text-[11px] text-slate-400">
+                              {user.email}
+                            </p>
+                          </div>
+
+                          <span
+                            className={`shrink-0 rounded-lg px-2.5 py-1 text-[10px] font-black ${
+                              user.role === "admin"
+                                ? "bg-slate-950 text-white"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {user.role}
+                          </span>
                         </div>
 
-                        <span
-                          className={`shrink-0 rounded-lg px-2.5 py-1 text-[10px] font-black ${
-                            user.role ===
-                            "admin"
-                              ? "bg-slate-950 text-white"
-                              : "bg-slate-100 text-slate-600"
-                          }`}
-                        >
-                          {
-                            user.role
-                          }
-                        </span>
-                      </div>
-
-                      <div className="mt-4 flex flex-wrap gap-1.5">
-                        <StatusPill
-                          active={
-                            user.isActive
-                          }
-                        >
-                          {user.isActive
-                            ? "Active"
-                            : "Inactive"}
-                        </StatusPill>
-
-                        {user.hasActiveSession ? (
-                          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-600">
-                            Session active
-                          </span>
-                        ) : null}
-
-                        {user.hasActiveDevice ? (
-                          <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
-                            Device active
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-3 gap-2">
-                        {user.isActive ? (
-                          <button
-                            type="button"
-                            disabled={
-                              busy
+                        <div className="mt-4 flex flex-wrap gap-1.5">
+                          <StatusPill
+                            active={
+                              user.isActive
                             }
-                            onClick={() =>
-                              updateUser(
-                                user,
-                                "deactivate"
-                              )
-                            }
-                            className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-red-100 bg-red-50 text-xs font-black text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <UserX className="h-3.5 w-3.5" />
+                            {user.isActive
+                              ? "Active"
+                              : "Inactive"}
+                          </StatusPill>
 
-                            Deactivate
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={
-                              busy
-                            }
-                            onClick={() =>
-                              updateUser(
-                                user,
-                                "activate"
-                              )
-                            }
-                            className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <UserCheck className="h-3.5 w-3.5" />
+                          {user.hasActiveSession ? (
+                            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-600">
+                              Session active
+                            </span>
+                          ) : null}
 
-                            Activate
-                          </button>
-                        )}
+                          {user.hasActiveDevice ? (
+                            <span className="rounded-full bg-slate-50 px-2.5 py-1 text-[10px] font-black text-slate-500">
+                              Device active
+                            </span>
+                          ) : null}
+                        </div>
 
-                        <button
-                          type="button"
-                          disabled={
-                            busy ||
-                            (!user.hasActiveSession &&
-                              !user.hasActiveDevice)
-                          }
-                          onClick={() =>
-                            updateUser(
-                              user,
-                              "revoke_session"
-                            )
-                          }
-                          className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-xs font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <ShieldOff className="h-3.5 w-3.5" />
-
-                          Revoke
-                        </button>
-
-                        {/* ACCESS BUTTON */}
-
-                        <button
-                          type="button"
-                          disabled={
-                            busy
-                          }
-                          onClick={() =>
-                            router.push(
-                              `/admin/users/${encodeURIComponent(
-                                String(
-                                  user.id
+                        <div className="mt-4 grid grid-cols-3 gap-2">
+                          {user.isActive ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                updateUser(
+                                  user,
+                                  "deactivate"
                                 )
-                              )}/access`
-                            )
-                          }
-                          className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 text-xs font-black text-blue-600 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <KeyRound className="h-3.5 w-3.5" />
+                              }
+                              className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-red-100 bg-red-50 text-xs font-black text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <UserX className="h-3.5 w-3.5" />
 
-                          Access
-                        </button>
+                              Deactivate
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                updateUser(
+                                  user,
+                                  "activate"
+                                )
+                              }
+                              className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-xs font-black text-white disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <UserCheck className="h-3.5 w-3.5" />
+
+                              Activate
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={
+                              busy ||
+                              (!user.hasActiveSession &&
+                                !user.hasActiveDevice)
+                            }
+                            onClick={() =>
+                              updateUser(
+                                user,
+                                "revoke_session"
+                              )
+                            }
+                            className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-xs font-black text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <ShieldOff className="h-3.5 w-3.5" />
+
+                            Revoke
+                          </button>
+
+                          {/* ACCESS */}
+
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              router.push(
+                                `/admin/users/${encodeURIComponent(
+                                  String(
+                                    user.id
+                                  )
+                                )}/access`
+                              )
+                            }
+                            className="inline-flex h-10 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-blue-100 bg-blue-50 text-xs font-black text-blue-600 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <KeyRound className="h-3.5 w-3.5" />
+
+                            Access
+                          </button>
+                        </div>
+
+                        <p className="mt-3 text-[10px] font-semibold text-slate-400">
+                          Joined{" "}
+                          {formatDate(
+                            user.createdAt
+                          )}
+                        </p>
                       </div>
-
-                      <p className="mt-3 text-[10px] font-semibold text-slate-400">
-                        Joined{" "}
-                        {formatDate(
-                          user.createdAt
-                        )}
-                      </p>
-                    </motion.article>
-                  );
-                }
-              )
+                    </div>
+                  </motion.article>
+                );
+              })
             : null}
         </div>
 
@@ -1336,13 +1311,9 @@ export default function AdminUsersPage() {
             LOAD MORE
         ==================================================== */}
 
-        {!loading &&
-        users.length >
-          0 ? (
+        {!loading && users.length > 0 ? (
           <div
-            ref={
-              setObserverTarget
-            }
+            ref={setObserverTarget}
             className="flex min-h-20 items-center justify-center border-t border-slate-100"
           >
             {loadingMore ? (
