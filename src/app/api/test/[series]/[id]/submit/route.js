@@ -749,22 +749,12 @@ export async function POST(
       });
     }
 
-    if (
-      answerStatements.length >
-      0
-    ) {
-      await db.batch(
-        answerStatements,
-        "write"
-      );
-    }
-
     /* -------------------------------------------------------
        TOTAL MARKS
-       
+
        Prefer attempt.total_marks because the total was
        already locked when the attempt was created.
-       
+
        Fallback:
        test.total_marks
     ------------------------------------------------------- */
@@ -780,7 +770,7 @@ export async function POST(
 
     /* -------------------------------------------------------
        SUBMIT ATTEMPT
-       
+
        IMPORTANT:
        No updated_at because the existing schema
        doesn't contain updated_at.
@@ -789,52 +779,96 @@ export async function POST(
     const submittedAt =
       now.toISOString();
 
+    /* -------------------------------------------------------
+       ATOMIC WRITE
+
+       SECURITY FIX (submission atomicity):
+
+       Previously the per-answer scoring writes
+       (answerStatements) went through db.batch() as one
+       round trip, and the attempt-row finalize (status,
+       score, counts) went through a SEPARATE db.execute()
+       right after it. If the server crashed, timed out, or
+       lost the connection between those two calls, an
+       attempt could be left with every answer scored but the
+       attempt row still showing status='in_progress' with no
+       score — an inconsistent state.
+
+       Fix:
+
+       The attempt-finalize UPDATE is now pushed into the
+       SAME statements array as the answer updates, and the
+       whole thing is sent through ONE db.batch() call.
+       libSQL/Turso runs every statement in a batch inside a
+       single transaction — either all of it lands, or none
+       of it does. The double-submit guard
+       (AND status = 'in_progress') stays exactly as before,
+       it's just the last statement in the same batch now
+       instead of a separate call.
+    ------------------------------------------------------- */
+
+    const finalStatements =
+      [
+        ...answerStatements,
+
+        {
+          sql: `
+            UPDATE ${config.attemptTable}
+
+            SET
+              status = ?,
+              submitted_at = ?,
+              score = ?,
+              total_marks = ?,
+              correct_count = ?,
+              wrong_count = ?,
+              unanswered_count = ?,
+              time_taken_seconds = ?
+
+            WHERE
+              id = ?
+              AND user_id = ?
+              AND test_id = ?
+              AND status = 'in_progress'
+          `,
+
+          args: [
+            finalStatus,
+
+            submittedAt,
+
+            finalScore,
+
+            totalMarks,
+
+            correctCount,
+
+            wrongCount,
+
+            unansweredCount,
+
+            totalTimeSeconds,
+
+            attemptId,
+
+            userId,
+
+            testId,
+          ],
+        },
+      ];
+
+    const batchResults =
+      await db.batch(
+        finalStatements,
+        "write"
+      );
+
     const updateResult =
-      await db.execute({
-        sql: `
-          UPDATE ${config.attemptTable}
-
-          SET
-            status = ?,
-            submitted_at = ?,
-            score = ?,
-            total_marks = ?,
-            correct_count = ?,
-            wrong_count = ?,
-            unanswered_count = ?,
-            time_taken_seconds = ?
-
-          WHERE
-            id = ?
-            AND user_id = ?
-            AND test_id = ?
-            AND status = 'in_progress'
-        `,
-
-        args: [
-          finalStatus,
-
-          submittedAt,
-
-          finalScore,
-
-          totalMarks,
-
-          correctCount,
-
-          wrongCount,
-
-          unansweredCount,
-
-          totalTimeSeconds,
-
-          attemptId,
-
-          userId,
-
-          testId,
-        ],
-      });
+      batchResults[
+        batchResults.length -
+          1
+      ];
 
     /* -------------------------------------------------------
        RACE CONDITION / DOUBLE SUBMIT

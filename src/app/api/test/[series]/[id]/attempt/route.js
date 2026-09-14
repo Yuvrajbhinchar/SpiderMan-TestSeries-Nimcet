@@ -151,12 +151,31 @@ export async function GET(
         testRow
       );
 
-    /* -------------------------------------------------------
+        /* -------------------------------------------------------
        ATTEMPT
     ------------------------------------------------------- */
 
-    const attemptResult =
-      await db.execute({
+    /* -------------------------------------------------------
+       PERFORMANCE FIX (parallelize independent reads):
+
+       attempt / sections / questions / saved-answers each
+       only depend on values we already have from the URL
+       (testId, attemptId, userId) — none of them depend on
+       another one's result. They used to run as 4 sequential
+       round trips; now they fire together and we wait once.
+
+       The OPTIONS query further below stays sequential,
+       since it genuinely needs the question ids that come
+       out of questionResult.
+    ------------------------------------------------------- */
+
+    const [
+      attemptResult,
+      sectionResult,
+      questionResult,
+      answerResult,
+    ] = await Promise.all([
+      db.execute({
         sql: `
           SELECT *
           FROM ${config.attemptTable}
@@ -174,7 +193,61 @@ export async function GET(
           userId,
           testId,
         ],
-      });
+      }),
+
+      db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.sectionTable}
+
+          WHERE
+            test_id = ?
+
+          ORDER BY
+            section_order ASC,
+            id ASC
+        `,
+
+        args: [
+          testId,
+        ],
+      }),
+
+      db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.questionTable}
+
+          WHERE
+            test_id = ?
+
+          ORDER BY
+            question_order ASC,
+            id ASC
+        `,
+
+        args: [
+          testId,
+        ],
+      }),
+
+      db.execute({
+        sql: `
+          SELECT *
+          FROM ${config.answerTable}
+
+          WHERE
+            attempt_id = ?
+
+          ORDER BY
+            question_id ASC
+        `,
+
+        args: [
+          attemptId,
+        ],
+      }),
+    ]);
 
     const attemptRow =
       attemptResult.rows?.[0];
@@ -346,25 +419,7 @@ export async function GET(
        SECTIONS
     ======================================================= */
 
-    const sectionResult =
-      await db.execute({
-        sql: `
-          SELECT *
-          FROM ${config.sectionTable}
-
-          WHERE
-            test_id = ?
-
-          ORDER BY
-            section_order ASC,
-            id ASC
-        `,
-
-        args: [
-          testId,
-        ],
-      });
-
+  
     const rawSections =
       Array.isArray(
         sectionResult.rows
@@ -454,24 +509,6 @@ export async function GET(
        QUESTIONS
     ======================================================= */
 
-    const questionResult =
-      await db.execute({
-        sql: `
-          SELECT *
-          FROM ${config.questionTable}
-
-          WHERE
-            test_id = ?
-
-          ORDER BY
-            question_order ASC,
-            id ASC
-        `,
-
-        args: [
-          testId,
-        ],
-      });
 
     const rawQuestions =
       Array.isArray(
@@ -649,23 +686,7 @@ export async function GET(
        SAVED ANSWERS
     ======================================================= */
 
-    const answerResult =
-      await db.execute({
-        sql: `
-          SELECT *
-          FROM ${config.answerTable}
-
-          WHERE
-            attempt_id = ?
-
-          ORDER BY
-            question_id ASC
-        `,
-
-        args: [
-          attemptId,
-        ],
-      });
+  
 
     const rawAnswers =
       Array.isArray(
@@ -1721,6 +1742,15 @@ export async function POST(
 
     /* -------------------------------------------------------
        COUNT SUBMITTED ATTEMPTS
+
+       This is used ONLY to build the response payload
+       (submittedCount / remainingAttempts / the error
+       message text below). It is intentionally NOT the
+       thing that decides whether a new attempt is allowed —
+       that decision now happens atomically inside the
+       INSERT itself (see ATOMIC CREATE ATTEMPT below), so
+       two parallel "start test" requests can no longer both
+       pass this check and both insert a row.
     ------------------------------------------------------- */
 
     const submittedResult =
@@ -1751,51 +1781,6 @@ export async function POST(
 
     const maxAttempts =
       3;
-
-    if (
-      submittedCount >=
-      maxAttempts
-    ) {
-      return jsonError(
-        "You have already completed the maximum 3 attempts for this test.",
-        403,
-        "ATTEMPTS_EXHAUSTED"
-      );
-    }
-
-    /* -------------------------------------------------------
-       UNIQUE ATTEMPT NUMBER
-    ------------------------------------------------------- */
-
-    const attemptNumberResult =
-      await db.execute({
-        sql: `
-          SELECT
-            COALESCE(
-              MAX(attempt_number),
-              0
-            ) + 1 AS next_attempt_number
-
-          FROM ${config.attemptTable}
-
-          WHERE
-            user_id = ?
-            AND test_id = ?
-        `,
-
-        args: [
-          userId,
-          testId,
-        ],
-      });
-
-    const attemptNumber =
-      Number(
-        attemptNumberResult
-          .rows?.[0]
-          ?.next_attempt_number ||
-          1
-      );
 
     /* =======================================================
        TIMER
@@ -1856,8 +1841,41 @@ export async function POST(
         null;
     }
 
-    /* =======================================================
-       CREATE ATTEMPT
+       /* =======================================================
+       ATOMIC CREATE ATTEMPT
+
+       SECURITY FIX (race condition):
+
+       Previously this was 3 separate round trips:
+         1) SELECT to check no active in_progress attempt
+         2) SELECT COUNT to check submitted < maxAttempts
+         3) SELECT MAX(attempt_number) to pick the next number
+         4) INSERT the new attempt
+
+       Two parallel "start test" requests (double-click,
+       two tabs, flaky retry) could both pass steps 1-3
+       before either finished step 4, letting a student end
+       up with more in_progress/total attempts than allowed.
+
+       Fix:
+
+       All of the gating logic (no existing in_progress
+       attempt + submitted count under the limit) AND the
+       next attempt_number calculation now live inside a
+       single INSERT ... SELECT statement. The next number
+       is computed in a derived subquery ("next_num"), and
+       the gating conditions sit in a plain WHERE on the
+       outer SELECT (Turso's SQL parser rejects a bare
+       HAVING without GROUP BY, so this avoids that).
+
+       SQLite/Turso only ever runs one write at a time per
+       database, so this whole statement is evaluated and
+       applied as one atomic unit — a second, concurrent
+       request cannot slip in between the check and the
+       insert anymore. If the WHERE condition is false
+       (an in_progress attempt now exists, or the submitted
+       count is already at the limit), the SELECT yields
+       zero rows and the INSERT inserts nothing.
     ======================================================= */
 
     const insertResult =
@@ -1874,16 +1892,45 @@ export async function POST(
             created_at
           )
 
-          VALUES (
-            ?,
-            ?,
-            ?,
-            'in_progress',
-            CURRENT_TIMESTAMP,
-            ?,
-            ?,
-            CURRENT_TIMESTAMP
-          )
+          SELECT
+            ? AS user_id,
+            ? AS test_id,
+            next_num.val AS attempt_number,
+            'in_progress' AS status,
+            CURRENT_TIMESTAMP AS started_at,
+            ? AS total_marks,
+            ? AS deadline_at,
+            CURRENT_TIMESTAMP AS created_at
+
+          FROM (
+            SELECT
+              COALESCE(
+                MAX(attempt_number),
+                0
+              ) + 1 AS val
+            FROM ${config.attemptTable}
+            WHERE
+              user_id = ?
+              AND test_id = ?
+          ) AS next_num
+
+          WHERE
+            NOT EXISTS (
+              SELECT 1
+              FROM ${config.attemptTable}
+              WHERE
+                user_id = ?
+                AND test_id = ?
+                AND status = 'in_progress'
+            )
+            AND (
+              SELECT COUNT(*)
+              FROM ${config.attemptTable}
+              WHERE
+                user_id = ?
+                AND test_id = ?
+                AND status = 'submitted'
+            ) < ?
 
           RETURNING
             id,
@@ -1909,8 +1956,6 @@ export async function POST(
 
           testId,
 
-          attemptNumber,
-
           Number(
             firstDefined(
               testRow.total_marks,
@@ -1920,6 +1965,20 @@ export async function POST(
           ),
 
           deadlineAt,
+
+          userId,
+
+          testId,
+
+          userId,
+
+          testId,
+
+          userId,
+
+          testId,
+
+          maxAttempts,
         ],
       });
 
@@ -1928,10 +1987,144 @@ export async function POST(
       insertResult.rows.length ===
         0
     ) {
+      /* -----------------------------------------------------
+         The atomic insert produced no row. Find out why so
+         we can respond correctly instead of a raw 500 —
+         either a concurrent request just created/holds an
+         in_progress attempt (race lost -> resume it), or the
+         submitted-attempt limit is genuinely exhausted.
+      ----------------------------------------------------- */
+
+      const raceCheckResult =
+        await db.execute({
+          sql: `
+            SELECT *
+            FROM ${config.attemptTable}
+
+            WHERE
+              user_id = ?
+              AND test_id = ?
+              AND status = 'in_progress'
+
+            ORDER BY
+              id DESC
+
+            LIMIT 1
+          `,
+
+          args: [
+            userId,
+            testId,
+          ],
+        });
+
+      const raceActiveAttempt =
+        raceCheckResult.rows?.[0] ||
+        null;
+
+      if (raceActiveAttempt) {
+        const startedAt =
+          toIsoUtc(
+            raceActiveAttempt.started_at
+          );
+
+        const raceDeadlineAt =
+          toIsoUtc(
+            raceActiveAttempt.deadline_at
+          );
+
+        console.log(
+          `[attempt POST] RACE-LOST ${series}/${testId} attempt=${raceActiveAttempt.id} -> resume`
+        );
+
+        return NextResponse.json(
+          {
+            success: true,
+
+            resumed: true,
+
+            mode:
+              "resume",
+
+            attempt: {
+              id:
+                Number(
+                  raceActiveAttempt.id
+                ),
+
+              userId:
+                Number(
+                  raceActiveAttempt.user_id
+                ),
+
+              testId:
+                Number(
+                  raceActiveAttempt.test_id
+                ),
+
+              attemptNumber:
+                Number(
+                  raceActiveAttempt.attempt_number
+                ),
+
+              status:
+                "in_progress",
+
+              startedAt,
+
+              started_at:
+                startedAt,
+
+              deadlineAt:
+                raceDeadlineAt,
+
+              deadline_at:
+                raceDeadlineAt,
+            },
+
+            test: {
+              id:
+                testId,
+
+              title:
+                firstDefined(
+                  testRow.title,
+                  `Test ${testId}`
+                ),
+
+              categorySlug,
+
+              isDpp,
+
+              isActive:
+                Number(
+                  firstDefined(
+                    testRow.is_active,
+                    testRow.isActive,
+                    0
+                  )
+                ) === 1,
+
+              isPublished:
+                toBoolean(
+                  firstDefined(
+                    testRow.is_published,
+                    testRow.isPublished,
+                    0
+                  )
+                ),
+            },
+          },
+          {
+            status: 200,
+          }
+        );
+      }
+
       return jsonError(
-        "Failed to create test attempt.",
-        500,
-        "ATTEMPT_CREATE_FAILED"
+        "You have already completed the maximum 3 attempts for this test.",
+        403,
+        "ATTEMPTS_EXHAUSTED"
       );
     }
 
