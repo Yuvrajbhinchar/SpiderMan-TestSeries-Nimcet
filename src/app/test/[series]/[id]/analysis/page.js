@@ -1135,20 +1135,20 @@ export default function AnalysisPage() {
 
                 <div
                   className={`rounded-md px-3 py-1.5 text-[10px] font-extrabold sm:text-xs ${
-                    currentQuestionData.resultStatus ===
-                    "correct"
+                    currentQuestionData.isCorrect ===
+                    true
                       ? "bg-green-100 text-green-700"
-                      : currentQuestionData.resultStatus ===
-                        "wrong"
+                      : currentQuestionData.isCorrect ===
+                        false
                         ? "bg-red-100 text-red-700"
                         : "bg-slate-100 text-slate-500"
                   }`}
                 >
-                  {currentQuestionData.resultStatus ===
-                  "correct"
+                  {currentQuestionData.isCorrect ===
+                  true
                     ? "Correct"
-                    : currentQuestionData.resultStatus ===
-                      "wrong"
+                    : currentQuestionData.isCorrect ===
+                      false
                       ? "Incorrect"
                       : "Unanswered"}
                 </div>
@@ -1230,11 +1230,11 @@ export default function AnalysisPage() {
 
                     <div
                       className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${
-                        currentQuestionData.resultStatus ===
-                        "correct"
+                        currentQuestionData.isCorrect ===
+                        true
                           ? "bg-green-100 text-green-700"
-                          : currentQuestionData.resultStatus ===
-                            "wrong"
+                          : currentQuestionData.isCorrect ===
+                            false
                             ? "bg-red-100 text-red-700"
                             : "bg-slate-100 text-slate-500"
                       }`}
@@ -1242,8 +1242,8 @@ export default function AnalysisPage() {
                       {currentQuestionData.selectedOptionId ==
                       null
                         ? "Not Attempted"
-                        : currentQuestionData.resultStatus ===
-                          "correct"
+                        : currentQuestionData.isCorrect ===
+                          true
                           ? "Your Answer is Correct"
                           : "Your Answer is Incorrect"}
                     </div>
@@ -1272,13 +1272,13 @@ export default function AnalysisPage() {
                           );
 
                         const isCorrect =
-                          (
-                            currentQuestionData.correctOptionIds ||
-                            []
-                          ).includes(
-                            Number(
-                              option.id
-                            )
+                          Number(
+                            option.id
+                          ) ===
+                          Number(
+                            currentQuestionData
+                              .correctOption
+                              ?.id
                           );
 
                         let optionClass =
