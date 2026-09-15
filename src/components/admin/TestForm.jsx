@@ -163,10 +163,14 @@ export default function TestForm({
         "",
 
       durationMinutes:
-        String(
-          initialTest.durationMinutes ||
-            60
-        ),
+        initialTest.durationMinutes !==
+          undefined &&
+        initialTest.durationMinutes !==
+          null
+          ? String(
+              initialTest.durationMinutes
+            )
+          : "60",
 
       totalQuestions:
         String(
@@ -812,7 +816,7 @@ export default function TestForm({
                   <input
                     required
                     type="number"
-                    min="1"
+                    min="0"
                     step="1"
                     value={
                       form.durationMinutes
@@ -822,13 +826,15 @@ export default function TestForm({
                     ) =>
                       updateField(
                         "durationMinutes",
-                        event
-                          .target
-                          .value
+                        event.target.value
                       )
                     }
                     className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-900 outline-none focus:border-red-300 focus:bg-white"
                   />
+
+                  <p className="mt-1.5 text-[10px] leading-5 text-slate-400">
+                    Use 0 for unlimited time (DPP only).
+                  </p>
                 </div>
 
                 <div>

@@ -183,8 +183,9 @@ function validateTestPayload(
     );
 
   const durationMinutes =
-    parsePositiveNumber(
-      body?.durationMinutes
+    parseNonNegativeNumber(
+      body?.durationMinutes,
+      null
     );
 
   const totalQuestions =
@@ -296,7 +297,7 @@ function validateTestPayload(
       ok: false,
       response:
         adminBadRequestResponse(
-          "Duration must be greater than 0."
+          "Duration must be 0 or greater."
         ),
     };
   }
@@ -362,7 +363,6 @@ async function validateCategory(
   if (!category) {
     return {
       ok: false,
-
       response:
         adminBadRequestResponse(
           "Selected category does not exist."
@@ -372,7 +372,6 @@ async function validateCategory(
 
   return {
     ok: true,
-
     category,
   };
 }
@@ -901,15 +900,32 @@ export const POST =
            CATEGORY
         --------------------------------------------------- */
 
-        const category =
+        const categoryResult =
           await validateCategory(
             test.categoryId
           );
 
         if (
-          !category.ok
+          !categoryResult.ok
         ) {
-          return category.response;
+          return categoryResult.response;
+        }
+
+        const category =
+          categoryResult.category;
+
+        const categorySlug =
+          normalize(
+            category.slug
+          );
+
+        if (
+          test.durationMinutes === 0 &&
+          categorySlug !== "dpp"
+        ) {
+          return adminBadRequestResponse(
+            "Unlimited duration is allowed only for DPP tests."
+          );
         }
 
         /* ---------------------------------------------------
@@ -1040,8 +1056,8 @@ export const POST =
                 ),
 
               categoryName:
-  category.category?.name ||
-  null,
+                category.name ||
+                null,
 
               title:
                 row.title,

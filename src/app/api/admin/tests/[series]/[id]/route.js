@@ -513,8 +513,9 @@ export const PATCH =
         const durationMinutes =
           body.durationMinutes !==
           undefined
-            ? parsePositiveNumber(
-                body.durationMinutes
+            ? parseNonNegativeNumber(
+                body.durationMinutes,
+                null
               )
             : Number(
                 existing.duration_minutes
@@ -622,7 +623,7 @@ export const PATCH =
           null
         ) {
           return adminBadRequestResponse(
-            "Duration must be greater than 0."
+            "Duration must be 0 or greater."
           );
         }
 
@@ -638,6 +639,20 @@ export const PATCH =
         if (!category) {
           return adminBadRequestResponse(
             "Selected category does not exist."
+          );
+        }
+
+        const categorySlug =
+          normalize(
+            category.slug
+          );
+
+        if (
+          durationMinutes === 0 &&
+          categorySlug !== "dpp"
+        ) {
+          return adminBadRequestResponse(
+            "Unlimited duration is allowed only for DPP tests."
           );
         }
 
