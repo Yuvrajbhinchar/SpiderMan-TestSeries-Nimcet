@@ -207,16 +207,27 @@ function isValidContent(content, delimiter) {
   }
 
   /*
-   * Single $ is the ambiguous one, so it gets the strict rules:
-   * no leading/trailing whitespace, and not a bare number
-   * (which is almost always currency, not math).
+   * Single $ is the ambiguous one, so it gets a stricter rule:
+   * no leading/trailing whitespace inside the delimiters.
+   *
+   * This alone is enough to keep real prose safe — e.g. "cost
+   * is $5 and profit is $10 per unit" never matches, because
+   * the text between the two "$" ("5 and profit is ") has a
+   * trailing space and so fails this check. A short, tightly
+   * wrapped expression like "$2$", "$10$" or "$-5$" is legitimate
+   * math (a numeric MCQ answer, most commonly) and is allowed
+   * through — it is exactly what $...$ is for.
+   *
+   * A bare number used to be rejected outright here on the
+   * assumption that it was almost always currency, but that
+   * broke the single most common case in this app: a numeric
+   * answer option written as "$2$". Genuine currency in prose
+   * (a lone "$5" with no closing "$" nearby) never reaches this
+   * check at all, since parseMathSegments only calls it once a
+   * matching closing delimiter has already been found.
    */
   if (delimiter.left === "$") {
     if (/^\s/.test(content) || /\s$/.test(content)) {
-      return false;
-    }
-
-    if (/^\d[\d.,]*$/.test(content)) {
       return false;
     }
   }
