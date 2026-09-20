@@ -13,6 +13,13 @@ import {
   EyeOff,
   CheckCircle2,
   XCircle,
+  Check,
+  Brain,
+  Calculator,
+  Code2,
+  Languages,
+  BookOpen,
+  AlertTriangle,
 } from "lucide-react";
 
 import {
@@ -42,6 +49,20 @@ const SERIES = [
   },
 ];
 
+/* =========================================================
+   SUBJECT ICONS
+
+   Keyed by the subject slug from the subjects table, so the
+   chips here match the tabs students see on the DPP dashboard.
+========================================================= */
+
+const SUBJECT_ICONS = {
+  maths: Calculator,
+  reasoning: Brain,
+  cs: Code2,
+  english: Languages,
+};
+
 const DEFAULT_FORM =
   {
     series: "free",
@@ -54,6 +75,7 @@ const DEFAULT_FORM =
     totalMarks: "0",
     isPublished: false,
     isActive: true,
+    subjectIds: [],
   };
 
 function slugify(
@@ -96,6 +118,16 @@ export default function TestForm({
   const [
     categoriesLoading,
     setCategoriesLoading,
+  ] = useState(true);
+
+  const [
+    subjects,
+    setSubjects,
+  ] = useState([]);
+
+  const [
+    subjectsLoading,
+    setSubjectsLoading,
   ] = useState(true);
 
   const [
@@ -192,6 +224,26 @@ export default function TestForm({
       isActive:
         initialTest.isActive !==
         false,
+
+      subjectIds:
+        Array.isArray(
+          initialTest.subjectIds
+        )
+          ? initialTest.subjectIds.map(
+              (id) =>
+                Number(id)
+            )
+          : Array.isArray(
+                initialTest.subjects
+              )
+            ? initialTest.subjects.map(
+                (subject) =>
+                  Number(
+                    subject?.id ??
+                      subject
+                  )
+              )
+            : [],
     });
 
     setSlugTouched(
@@ -285,6 +337,81 @@ export default function TestForm({
   }, []);
 
   /* =========================================================
+     LOAD SUBJECTS
+  ========================================================= */
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSubjects() {
+      try {
+        setSubjectsLoading(
+          true
+        );
+
+        const response =
+          await fetch(
+            "/api/admin/subjects",
+            {
+              method: "GET",
+              credentials:
+                "include",
+              cache:
+                "no-store",
+            }
+          );
+
+        const data =
+          await response
+            .json()
+            .catch(
+              () => ({})
+            );
+
+        if (cancelled) {
+          return;
+        }
+
+        if (
+          !response.ok
+        ) {
+          throw new Error(
+            data?.error ||
+              "Unable to load subjects."
+          );
+        }
+
+        setSubjects(
+          Array.isArray(
+            data?.subjects
+          )
+            ? data.subjects
+            : []
+        );
+      } catch (
+        loadError
+      ) {
+        console.error(
+          "Admin subjects load error:",
+          loadError
+        );
+      } finally {
+        if (!cancelled) {
+          setSubjectsLoading(
+            false
+          );
+        }
+      }
+    }
+
+    loadSubjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* =========================================================
      FIELD HELPERS
   ========================================================= */
 
@@ -301,6 +428,44 @@ export default function TestForm({
           [field]:
             value,
         })
+      );
+    };
+
+  const toggleSubject =
+    (subjectId) => {
+      const id =
+        Number(subjectId);
+
+      setForm(
+        (previous) => {
+          const current =
+            Array.isArray(
+              previous.subjectIds
+            )
+              ? previous.subjectIds
+              : [];
+
+          return {
+            ...previous,
+
+            subjectIds:
+              current.includes(
+                id
+              )
+                ? current.filter(
+                    (item) =>
+                      item !==
+                      id
+                  )
+                : [
+                    ...current,
+                    id,
+                  ].sort(
+                    (a, b) =>
+                      a - b
+                  ),
+          };
+        }
       );
     };
 
@@ -351,6 +516,25 @@ export default function TestForm({
       if (
         saving
       ) {
+        return;
+      }
+
+      /*
+       * DPP tests are browsed subject-by-subject, so an
+       * untagged DPP is published but unreachable. Catch it
+       * here instead of letting the API 400 after a round trip.
+       */
+      if (
+        isDppCategory &&
+        form.subjectIds.length ===
+          0
+      ) {
+        setSuccess("");
+
+        setError(
+          "Select at least one subject — DPP tests are shown to students under subject tabs."
+        );
+
         return;
       }
 
@@ -436,6 +620,9 @@ export default function TestForm({
 
                     isActive:
                       form.isActive,
+
+                    subjectIds:
+                      form.subjectIds,
                   }
                 ),
             }
@@ -514,6 +701,28 @@ export default function TestForm({
   /* =========================================================
      CATEGORY LIST
   ========================================================= */
+
+  const selectedCategory =
+    categories.find(
+      (category) =>
+        String(
+          category.id
+        ) ===
+        String(
+          form.categoryId
+        )
+    ) || null;
+
+  const categorySlug =
+    String(
+      selectedCategory?.slug ||
+        ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const isDppCategory =
+    categorySlug === "dpp";
 
   const activeCategories =
     categories.filter(
@@ -712,6 +921,108 @@ export default function TestForm({
                     )
                   )}
                 </select>
+              </div>
+
+              {/* SUBJECTS */}
+
+              <div>
+                <label className="flex items-center gap-1.5 text-xs font-black text-slate-700">
+                  <BookOpen className="h-3.5 w-3.5" />
+
+                  Subjects
+
+                  {isDppCategory ? (
+                    <span className="rounded-full bg-red-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[#ef1118]">
+                      Required for DPP
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold text-slate-400">
+                      Optional
+                    </span>
+                  )}
+                </label>
+
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {subjectsLoading ? (
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+
+                      Loading subjects...
+                    </div>
+                  ) : subjects.length ===
+                    0 ? (
+                    <div className="text-xs font-medium text-slate-400">
+                      No subjects found in the database.
+                    </div>
+                  ) : (
+                    subjects.map(
+                      (
+                        subject
+                      ) => {
+                        const Icon =
+                          SUBJECT_ICONS[
+                            subject.slug
+                          ] ||
+                          BookOpen;
+
+                        const selected =
+                          form.subjectIds.includes(
+                            Number(
+                              subject.id
+                            )
+                          );
+
+                        return (
+                          <button
+                            key={
+                              subject.id
+                            }
+                            type="button"
+                            onClick={() =>
+                              toggleSubject(
+                                subject.id
+                              )
+                            }
+                            className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-bold transition ${
+                              selected
+                                ? "border-[#ef1118] bg-[#ef1118] text-white shadow-sm shadow-red-100"
+                                : "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-white"
+                            }`}
+                          >
+                            {selected ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Icon className="h-3.5 w-3.5" />
+                            )}
+
+                            {
+                              subject.name
+                            }
+                          </button>
+                        );
+                      }
+                    )
+                  )}
+                </div>
+
+                {isDppCategory &&
+                form.subjectIds
+                  .length === 0 &&
+                !subjectsLoading ? (
+                  <p className="mt-2 flex items-start gap-1.5 text-[10px] font-bold leading-5 text-amber-600">
+                    <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+
+                    A DPP with no subject is published but
+                    unreachable — students browse DPPs by
+                    subject tab.
+                  </p>
+                ) : (
+                  <p className="mt-2 text-[10px] leading-5 text-slate-400">
+                    Used for the subject tabs on the student
+                    dashboard and the chips on each test card.
+                    Mock tests may cover several subjects.
+                  </p>
+                )}
               </div>
 
               {/* TITLE */}

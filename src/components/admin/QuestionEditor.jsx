@@ -19,6 +19,10 @@ import {
   useRouter,
 } from "next/navigation";
 
+import MathPreview, {
+  MathCheatSheet,
+} from "@/components/admin/MathPreview";
+
 /* =========================================================
    QUESTION TYPES
 ========================================================= */
@@ -987,8 +991,17 @@ export default function QuestionEditor({
                 />
 
                 <p className="mt-1.5 text-[10px] leading-5 text-slate-400">
-                  You may use text, an image, or both.
+                  You may use text, an image, or both. Wrap
+                  math in $...$ (inline) or $$...$$ (own
+                  line) — see &quot;Math / LaTeX help&quot;.
                 </p>
+
+                <MathPreview
+                  value={
+                    form.questionText
+                  }
+                  label="Question preview"
+                />
               </div>
 
               {/* IMAGE URL */}
@@ -1059,6 +1072,13 @@ export default function QuestionEditor({
                   }
                   placeholder="Optional explanation for analysis."
                   className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm leading-6 text-slate-900 outline-none placeholder:text-slate-400 focus:border-red-300 focus:bg-white"
+                />
+
+                <MathPreview
+                  value={
+                    form.explanation
+                  }
+                  label="Explanation preview"
                 />
               </div>
 
@@ -1171,6 +1191,14 @@ export default function QuestionEditor({
                               </button>
                             ) : null}
                           </div>
+
+                          <MathPreview
+                            compact
+                            value={
+                              option.text
+                            }
+                            label={`Option ${option.label} preview`}
+                          />
                         </div>
                       )
                     )}
@@ -1380,6 +1408,10 @@ export default function QuestionEditor({
                 </div>
               </div>
             </section>
+
+            {/* MATH HELP */}
+
+            <MathCheatSheet />
 
             {/* SAVE */}
 

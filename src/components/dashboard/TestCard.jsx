@@ -26,6 +26,16 @@ const SUBJECT_META = {
     short: "Reasoning",
   },
 
+  "Logical Reasoning": {
+    icon: Brain,
+    short: "Reasoning",
+  },
+
+  "Logical Ability": {
+    icon: Brain,
+    short: "Reasoning",
+  },
+
   CS: {
     icon: Code2,
     short: "CS",
