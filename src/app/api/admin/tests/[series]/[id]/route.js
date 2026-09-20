@@ -13,6 +13,15 @@ import {
   withAdminAction,
 } from "@/lib/adminApi";
 
+import {
+  getSubjectTable,
+  getTestSubjects,
+  parseSubjectIds,
+  requiresSubjects,
+  setTestSubjects,
+  validateSubjectIds,
+} from "@/lib/testSubjects";
+
 const SERIES_CONFIG =
   Object.freeze({
     free: {
@@ -291,6 +300,23 @@ export const GET =
             test.category_id
           );
 
+        /* ---------------------------------------------------
+           SUBJECTS
+
+           TestForm needs these to pre-tick the subject chips
+           when an existing test is opened for editing.
+        --------------------------------------------------- */
+
+        const subjects =
+          await getTestSubjects({
+            table:
+              getSubjectTable(
+                series
+              ),
+
+            testId,
+          });
+
         return adminSuccess({
           test: {
             id:
@@ -365,6 +391,14 @@ export const GET =
               Number(
                 test.is_active
               ) === 1,
+
+            subjects,
+
+            subjectIds:
+              subjects.map(
+                (subject) =>
+                  subject.id
+              ),
 
             createdAt:
               test.created_at,
@@ -657,6 +691,55 @@ export const PATCH =
         }
 
         /* ---------------------------------------------------
+           SUBJECTS
+
+           parseSubjectIds() returns null when the client did
+           not send the field at all, which means "leave the
+           existing subject links exactly as they are". An
+           empty array means "clear them", and is rejected for
+           a DPP because such a test disappears from every
+           subject tab on the dashboard.
+        --------------------------------------------------- */
+
+        const subjectTable =
+          getSubjectTable(
+            series
+          );
+
+        const subjectIds =
+          parseSubjectIds(
+            body?.subjectIds
+          );
+
+        if (
+          subjectIds !== null
+        ) {
+          if (
+            requiresSubjects(
+              categorySlug
+            ) &&
+            subjectIds.length === 0
+          ) {
+            return adminBadRequestResponse(
+              "Select at least one subject for a DPP test, otherwise students cannot find it under any subject tab."
+            );
+          }
+
+          const subjectCheck =
+            await validateSubjectIds(
+              subjectIds
+            );
+
+          if (
+            !subjectCheck.ok
+          ) {
+            return adminBadRequestResponse(
+              subjectCheck.message
+            );
+          }
+        }
+
+        /* ---------------------------------------------------
            SLUG
         --------------------------------------------------- */
 
@@ -768,6 +851,32 @@ export const PATCH =
           );
         }
 
+        /* ---------------------------------------------------
+           SUBJECT LINKS
+        --------------------------------------------------- */
+
+        if (
+          subjectTable &&
+          subjectIds !== null
+        ) {
+          await setTestSubjects({
+            table:
+              subjectTable,
+
+            testId,
+
+            subjectIds,
+          });
+        }
+
+        const finalSubjects =
+          await getTestSubjects({
+            table:
+              subjectTable,
+
+            testId,
+          });
+
         return adminSuccess({
           message:
             "Test updated successfully.",
@@ -838,6 +947,15 @@ export const PATCH =
               Number(
                 updated.is_active
               ) === 1,
+
+            subjects:
+              finalSubjects,
+
+            subjectIds:
+              finalSubjects.map(
+                (subject) =>
+                  subject.id
+              ),
 
             createdAt:
               updated.created_at,

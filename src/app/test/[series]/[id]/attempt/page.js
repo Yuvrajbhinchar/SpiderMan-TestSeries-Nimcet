@@ -33,6 +33,10 @@ import { toast } from "sonner";
 
 import SpiderManLoader from "@/components/common/SpiderManLoader";
 
+import MathText, {
+  MathTextInline,
+} from "@/components/common/MathText";
+
 const STATUS = {
   NOT_VISITED: "not_visited",
   NOT_ANSWERED: "not_answered",
@@ -1952,9 +1956,10 @@ export default function AttemptPage() {
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 pb-28 lg:px-8 lg:pb-8">
               <div className="mx-auto w-full max-w-[1000px]">
                 {currentQuestion.questionText ? (
-                  <div className="whitespace-pre-wrap text-[20px] leading-8 tracking-[-0.01em] text-slate-800 sm:text-[22px]">
-                    {currentQuestion.questionText}
-                  </div>
+                  <MathText
+                    text={currentQuestion.questionText}
+                    className="whitespace-pre-wrap text-[20px] leading-8 tracking-[-0.01em] text-slate-800 sm:text-[22px]"
+                  />
                 ) : null}
 
                 {/* QUESTION IMAGE */}
@@ -2000,9 +2005,10 @@ export default function AttemptPage() {
                           {option.label}
                         </span>
 
-                        <span className="whitespace-pre-wrap text-[17px] leading-7 text-slate-700">
-                          {option.text}
-                        </span>
+                        <MathTextInline
+                          text={option.text}
+                          className="whitespace-pre-wrap text-[17px] leading-7 text-slate-700"
+                        />
                       </button>
                     );
                   })}

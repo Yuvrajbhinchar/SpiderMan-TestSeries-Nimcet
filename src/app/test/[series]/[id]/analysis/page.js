@@ -7,6 +7,8 @@ import {
   useRef,
 } from "react";
 
+
+
 import {
   AlertTriangle,
   ArrowLeft,
@@ -27,6 +29,10 @@ import {
 } from "next/navigation";
 
 import SpiderManLoader from "@/components/common/SpiderManLoader";
+
+import MathText, {
+  MathTextInline,
+} from "@/components/common/MathText";
 
 /* =========================================================
    PALETTE STATUS
@@ -1250,11 +1256,12 @@ export default function AnalysisPage() {
                   </div>
 
                   {/* QUESTION */}
-                  <div className="mb-9 whitespace-pre-wrap text-[20px] font-normal leading-[1.7] text-slate-800 sm:text-[21px]">
-                    {
+                  <MathText
+                    text={
                       currentQuestionData.questionText
                     }
-                  </div>
+                    className="mb-9 whitespace-pre-wrap text-[20px] font-normal leading-[1.7] text-slate-800 sm:text-[21px]"
+                  />
 
                   {/* OPTIONS */}
                   <div className="flex flex-col gap-4">
@@ -1350,18 +1357,17 @@ export default function AnalysisPage() {
                             </span>
 
                             {/* TEXT */}
-                            <span
-                              className={`text-[16px] leading-[1.6] sm:text-[17px] ${
+                            <MathTextInline
+                              text={
+                                option.text
+                              }
+                              className={`whitespace-pre-wrap text-[16px] leading-[1.6] sm:text-[17px] ${
                                 isCorrect ||
                                 isSelected
                                   ? "font-semibold text-slate-800"
                                   : "font-medium text-slate-700"
                               }`}
-                            >
-                              {
-                                option.text
-                              }
-                            </span>
+                            />
 
                             {/* RIGHT ICONS */}
                             <div className="ml-auto flex shrink-0 items-center pl-3">
@@ -1379,6 +1385,22 @@ export default function AnalysisPage() {
                       }
                     )}
                   </div>
+
+                  {/* EXPLANATION */}
+                  {currentQuestionData.explanation ? (
+                    <div className="mt-7 rounded-2xl border border-blue-100 bg-blue-50/60 p-5">
+                      <div className="text-[11px] font-black uppercase tracking-[0.18em] text-blue-500">
+                        Solution
+                      </div>
+
+                      <MathText
+                        text={
+                          currentQuestionData.explanation
+                        }
+                        className="mt-3 whitespace-pre-wrap text-[15px] leading-[1.75] text-slate-700 sm:text-[16px]"
+                      />
+                    </div>
+                  ) : null}
 
                   {/* REVIEWS COMING SOON */}
                   <div className="mt-7 rounded-2xl border border-slate-200 bg-slate-50 p-5">

@@ -31,6 +31,8 @@ import {
   motion,
 } from "motion/react";
 
+import MathText from "@/components/common/MathText";
+
 function QuestionTypeBadge({
   type,
 }) {
@@ -1003,17 +1005,16 @@ export default function AdminQuestionsPage() {
                           ) : null}
 
                           {question.questionText ? (
-                            <p
+                            <MathText
+                              text={
+                                question.questionText
+                              }
                               className={`whitespace-pre-wrap text-sm leading-6 text-slate-700 ${
                                 hasImage
                                   ? "mt-4"
                                   : ""
                               }`}
-                            >
-                              {
-                                question.questionText
-                              }
-                            </p>
+                            />
                           ) : null}
                         </div>
 

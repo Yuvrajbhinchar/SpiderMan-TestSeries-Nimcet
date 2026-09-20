@@ -24,3 +24,71 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* =========================================================
+   KATEX / MATH RENDERING
+   ---------------------------------------------------------
+   Used by <MathText /> for question text, options and
+   explanations. KaTeX ships its own stylesheet (imported in
+   src/app/layout.js); everything below is only the app-level
+   fit-and-finish on top of it.
+========================================================= */
+
+.katex {
+  /*
+   * KaTeX defaults to 1.21em which looks oversized next to the
+   * 20px question text. 1.05em keeps symbols readable without
+   * breaking the line rhythm.
+   */
+  font-size: 1.05em;
+  line-height: 1.2;
+}
+
+/* Inline math must never force a horizontal scrollbar on the
+   whole page: let long inline expressions wrap instead. */
+.math-inline-wrap {
+  display: inline;
+  max-width: 100%;
+}
+
+.math-inline-wrap .katex {
+  white-space: normal;
+}
+
+/* Display math ($$ ... $$ and \[ ... \]) gets its own line and
+   scrolls sideways on phones instead of overflowing the card. */
+.math-display-wrap {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+
+  /* thin, unobtrusive scrollbar on the rare wide matrix */
+  scrollbar-width: thin;
+}
+
+.math-display-wrap .katex-display {
+  margin: 0.85em 0;
+  padding: 0 2px;
+}
+
+.math-display-wrap .katex-display > .katex {
+  white-space: nowrap;
+}
+
+/* Matrices / arrays inside option rows should not be cramped. */
+.math-display-wrap:first-child .katex-display {
+  margin-top: 0;
+}
+
+.math-display-wrap:last-child .katex-display {
+  margin-bottom: 0;
+}
+
+/* KaTeX error colour is set in src/lib/mathText.js; this just
+   makes a failed expression obvious while still readable. */
+.katex .katex-error {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}

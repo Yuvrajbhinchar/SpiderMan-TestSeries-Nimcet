@@ -197,6 +197,18 @@ export default function BulkImportQuestionsPage() {
             Limit: 300 questions per import. Larger banks — split into a few
             requests.
           </p>
+
+          <p className="mt-3 text-[10px] font-black uppercase tracking-[0.12em] text-slate-400">
+            Math / LaTeX
+          </p>
+          <p className="mt-2">
+            <code>questionText</code>, <code>explanation</code> and each option{" "}
+            <code>text</code> support LaTeX: wrap it in{" "}
+            <code>{"$...$"}</code> for inline or <code>{"$$...$$"}</code> for a
+            centred line. In JSON every backslash must be doubled, e.g.{" "}
+            <code>{'"$\\frac{1}{2}$"'}</code>. Diagrams still go in{" "}
+            <code>questionImageUrl</code>.
+          </p>
         </aside>
       </div>
     </div>

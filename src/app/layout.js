@@ -1,4 +1,15 @@
 import { Toaster } from "sonner";
+
+/*
+ * KaTeX stylesheet.
+ *
+ * Imported once, globally, so every <MathText /> (attempt page,
+ * analysis page, admin preview) renders with the correct fonts
+ * and spacing. Must stay ABOVE ./globals.css so the app-level
+ * .katex overrides in globals.css win.
+ */
+import "katex/dist/katex.min.css";
+
 import "./globals.css";
 
 import ReduxProvider from "@/components/providers/ReduxProvider";

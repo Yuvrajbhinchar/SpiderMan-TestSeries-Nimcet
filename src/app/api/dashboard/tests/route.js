@@ -27,15 +27,17 @@ const ALLOWED_MODES =
   ]);
 
 /* =========================================================
-   SUBJECT IDS
+   SUBJECT SLUG PATTERN
+
+   The filter joins subjects.slug instead of a hardcoded id
+   map, so re-seeding the subjects table (or adding a fifth
+   subject later) can never silently break the DPP tabs.
+
+   The pattern is only here to keep junk out of the query.
 ========================================================= */
 
-const SUBJECT_IDS = {
-  maths: 1,
-  reasoning: 2,
-  cs: 3,
-  english: 4,
-};
+const SUBJECT_SLUG_PATTERN =
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /* =========================================================
    HELPERS
@@ -87,12 +89,11 @@ function getSubjectFilter({
     };
   }
 
-  const subjectId =
-    SUBJECT_IDS[
+  if (
+    !SUBJECT_SLUG_PATTERN.test(
       subject
-    ];
-
-  if (!subjectId) {
+    )
+  ) {
     return {
       sql:
         "AND 1 = 0",
@@ -106,14 +107,19 @@ function getSubjectFilter({
       AND EXISTS (
         SELECT 1
         FROM ${subjectsTable} tst_filter
+
+        INNER JOIN subjects s_filter
+          ON s_filter.id =
+            tst_filter.subject_id
+
         WHERE
           tst_filter.test_id = t.id
-          AND tst_filter.subject_id = ?
+          AND LOWER(s_filter.slug) = ?
       )
     `,
 
     args: [
-      subjectId,
+      subject,
     ],
   };
 }

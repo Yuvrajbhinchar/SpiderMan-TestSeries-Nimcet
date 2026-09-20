@@ -14,6 +14,14 @@ import {
   withAdminAction,
 } from "@/lib/adminApi";
 
+import {
+  getSubjectTable,
+  parseSubjectIds,
+  requiresSubjects,
+  setTestSubjects,
+  validateSubjectIds,
+} from "@/lib/testSubjects";
+
 /* =========================================================
    SERIES CONFIG
 ========================================================= */
@@ -929,6 +937,42 @@ export const POST =
         }
 
         /* ---------------------------------------------------
+           SUBJECTS
+
+           DPPs are browsed subject-by-subject on the student
+           dashboard, so an untagged DPP would be unreachable.
+        --------------------------------------------------- */
+
+        const subjectIds =
+          parseSubjectIds(
+            body?.subjectIds
+          ) || [];
+
+        if (
+          requiresSubjects(
+            categorySlug
+          ) &&
+          subjectIds.length === 0
+        ) {
+          return adminBadRequestResponse(
+            "Select at least one subject for a DPP test, otherwise students cannot find it under any subject tab."
+          );
+        }
+
+        const subjectCheck =
+          await validateSubjectIds(
+            subjectIds
+          );
+
+        if (
+          !subjectCheck.ok
+        ) {
+          return adminBadRequestResponse(
+            subjectCheck.message
+          );
+        }
+
+        /* ---------------------------------------------------
            SLUG UNIQUE
         --------------------------------------------------- */
 
@@ -1034,6 +1078,30 @@ export const POST =
           );
         }
 
+        /* ---------------------------------------------------
+           LINK SUBJECTS
+        --------------------------------------------------- */
+
+        const subjectTable =
+          getSubjectTable(
+            series
+          );
+
+        if (
+          subjectTable &&
+          subjectIds.length > 0
+        ) {
+          await setTestSubjects({
+            table:
+              subjectTable,
+
+            testId:
+              Number(row.id),
+
+            subjectIds,
+          });
+        }
+
         return adminSuccess(
           {
             message:
@@ -1093,6 +1161,12 @@ export const POST =
                 Number(
                   row.is_active
                 ) === 1,
+
+              subjectIds,
+
+              subjects:
+                subjectCheck.subjects ||
+                [],
 
               createdAt:
                 row.created_at,
